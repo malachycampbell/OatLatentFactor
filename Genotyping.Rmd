@@ -1,0 +1,695 @@
+---
+title: "Imputing marker data"
+author: "Malachy Campbell"
+date: "11/25/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      root.dir = "/Users/malachycampbell/Documents/Dropbox/Work/Oats/TrevorOats/genotypes/")
+```
+
+# Introduction
+This is a modification of Trevor's scripts. The first part will merge marker data from mulitple experiments. In the cases where there are multiple genotyping experiments, I compare the number of loci that match between replicates. If the proportion of mismatched loci (with respect to the total number of matching and non-matching loci) exceeds some threshold (10\%) I remove those individuals. 
+
+Imputation is done using the same approach as Trevor except the imputation is done on batches of markers and is submitted on the computing cluster. Thus, results from each batch are written to a seperate file and these are later combined locally. 
+
+I suspect that subsetting markers may influence imputation. Selecting a large enough set of consecutive markers should capture some haplotype and this haplotype will inform the missing marker. For unmapped SNPs this can be problematic because we are not necessarily selected neighboring markers (i.e. markers in LD) to the missing marker. Thus imputation was run using all markers as well as only mapped markers. Genetic analysis will be compared between imputation strategies.
+
+## Creating the marker matrix
+
+### All markers (mapped and unmapped)
+
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+#### Libraries ####
+library(tidyverse)
+library(data.table)
+
+#### Paramters ####
+
+# mismatch forequency for samples with multiple genotyping data
+MMfreq <- 0.10
+
+# minimum minor allele frequency
+min_maf <- 0.02
+
+# maximum site missingness
+max_site_missing <- 0.6
+
+# maximum site heterozygosity
+max_site_het <- 0.1
+
+# maximum individual missingness
+max_indvMiss <- 0.70
+
+# maximum individual heterozygosity
+max_sampHet <- 0.1
+
+# filter based on mapped SNPs?
+mapped_SNPs_only <- FALSE
+
+#### Input files ####
+
+elite_names <- fread("results/elite_t3_names.csv")
+diversity_names <- fread("results/diversity_t3_names.csv")
+t3_line_info <- fread("data/t3oat_LineRecords.csv")
+
+snp_map <- fread("data/T_AHOY_OC3_Monkey.csv")
+
+#### Make merged list of lines ####
+merged_names <- union(elite_names$t3_name, diversity_names$t3_name)
+
+cat("\nTotal (nonredundant) number of lines:", length(merged_names), "\n")
+
+#### build a table with line information ####
+line_info <- data.frame(name = merged_names,
+                        IS_DIVERSITY = merged_names %in% diversity_names$t3_name,
+                        IS_ELITE = merged_names %in% elite_names$t3_name,
+                        population = NA,
+                        program = t3_line_info$`Breeding Program`[match(merged_names, t3_line_info$Name)],
+                        stringsAsFactors = FALSE)
+
+line_info$population[line_info$IS_DIVERSITY & !line_info$IS_ELITE] <- "Diversity"
+line_info$population[line_info$IS_ELITE & !line_info$IS_DIVERSITY] <- "Elite"
+line_info$population[line_info$IS_ELITE & line_info$IS_DIVERSITY] <- "Both"
+
+
+# get the list of genotyping experiments (directory names) from the directory containing them all
+experiments <- list.files("data/t3_gbsdata/")
+
+#### load and extract the genomatrices ####
+# make a dummy dataframe for the merged genomatrix
+merged_elite_genomat <- NULL
+
+cat("\nBeginning genotype extraction...\n")
+
+# loop through each experiment, load corresponding genomatrix 
+for (genotype_experiment in experiments){
+  cat("\nGBS experiment ", genotype_experiment, "...\n", sep="")
+  geno_mat <- fread(paste0("data/t3_gbsdata/", genotype_experiment, "/genotype.hmp.txt"), header=T, data.table = FALSE)
+  colnames(geno_mat) <- gsub("\\'", "", colnames(geno_mat))
+  
+  # delete marker details (alleles	chrom	pos)
+  geno_mat <- geno_mat[,-(2:4)]
+
+  lines_to_extract <- intersect(colnames(geno_mat)[2:ncol(geno_mat)], merged_names)
+
+  extracted_geno_mat <- geno_mat[,c("rs",lines_to_extract)]
+  
+  #append experiment to line names/genocodes (in the column names)
+  colnames(extracted_geno_mat)[2:ncol(extracted_geno_mat)] <- sub("$", paste("_EXP_" , genotype_experiment, sep=""), colnames(extracted_geno_mat)[2:length(extracted_geno_mat)])
+  
+  if (is.null(merged_elite_genomat)){
+    merged_elite_genomat <- extracted_geno_mat
+  }else{
+    merged_elite_genomat <- merge(merged_elite_genomat, extracted_geno_mat, by="rs", all=TRUE)
+  }
+  rm(list=c("geno_mat","extracted_geno_mat"))
+}
+
+# split up the sample names to recover separate genocode and genotyping experiment
+splat <- t(as.data.frame(strsplit(colnames(merged_elite_genomat)[2:ncol(merged_elite_genomat)], "_EXP_")))
+
+samplestats <- data.frame(gbs_exp = colnames(merged_elite_genomat)[2:ncol(merged_elite_genomat)],
+                          genocode = splat[,1],
+                          experiment = splat[,2],
+                          #call_rate = apply(merged_elite_genomat[,2:ncol(merged_elite_genomat)], 2, function(x) (length(na.omit(x)) / length(x))),
+                          call_rate = apply(merged_elite_genomat[,2:ncol(merged_elite_genomat)], 2, function(x) (sum(is.na(x)) / length(x))),
+                          stringsAsFactors = F
+                          )
+
+# for samples that were genotyped more than once, find the samples, count the proportion of non-matching SNP calls, if proportion is < threshold then keep both,
+# for ambiguous calls set both the NA, merge
+#Function for checking for mismatches. Returns an indicator vector: if at least one mismatch then 1, else 0
+checky <- function(x){
+  if(sum(is.na(x)) < (length(x)-1)){
+    cnt <- ifelse(length(unique(na.omit(x))) == 1, 0, 1)
+  }else{
+    cnt <- NA
+  }
+  return(cnt)}
+
+noDups <- table(samplestats$genocode)
+dupSamples <- names(noDups[noDups > 1]); length(dupSamples); sum(noDups[noDups > 1]) #75 lines with multiple reps equating to 154 samples
+#histogram for number of lines with more than one genotyping experiment
+pdf("../../DivPanel_Met_HH/GenoData/Preprocessing/Hist_NoSamples.pdf", h = 4, w = 6)
+hist(noDups, xlab = "Number of genotyping experiments", ylab = "No Lines")
+dev.off()
+
+freqMismatches <- data.frame(Sample = dupSamples, MMfreq = NA)
+
+#loop through duplicate samples, check for mismatched loci, if mismatched set both to NA, if not merge experiments
+markMat <- matrix(NA, ncol = length(dupSamples), nrow = nrow(merged_elite_genomat))
+for(i in 1:length(dupSamples)){
+  tmpGenos <- merged_elite_genomat[c("rs", colnames(merged_elite_genomat)[grep(dupSamples[i], colnames(merged_elite_genomat))])] #temporary marker matrix m x sample; sample refers to samples with more than one replicate
+  noMismatch <- apply(tmpGenos[2:ncol(tmpGenos)], 1, checky)
+  tmpGenos[2:ncol(tmpGenos)][which(noMismatch > 0) ,] <- rep(NA, length(2:ncol(tmpGenos))) #replaces both loci with NA for mismatched loci
+  #MMfreq is the number of loci that are not consistent across genotyping experiments, 
+  #divided by the total number of loci detected across multiple experiments (match or mismatched)
+  freqMismatches$MMfreq[i] <- sum(noMismatch == 1, na.rm = T)/(sum(noMismatch == 1, na.rm = T) + sum(noMismatch == 0, na.rm = T))
+  
+  markMat[,i] <- apply(tmpGenos[2:ncol(tmpGenos)], 1, function(x){
+    if(sum(is.na(x)) == length(x)){
+      foo <- NA
+    }else{
+      foo <- unique(na.omit(x))
+    }
+  return(foo)})
+}
+
+colnames(markMat) <- dupSamples
+markMat <- as.data.frame(markMat) #merged marker matrix for the duplicated samples
+
+#Remove accessions with lots of mismatches
+summary(freqMismatches)
+pdf("../../DivPanel_Met_HH/GenoData/Preprocessing/Hist_NoMismatches.pdf")
+hist(freqMismatches$MMfreq, ylab = "No Lines", xlab = "MM freq")
+dev.off()
+
+goodSamples <- freqMismatches$Sample[freqMismatches$MMfreq <= MMfreq]; length(goodSamples); sum(noDups[names(noDups) %in% goodSamples]) #52 of 75; 105 samples
+
+#messy way to get marker information for nonduplicated accessions
+colnames(merged_elite_genomat) <- sub("_EXP_.*", "",colnames(merged_elite_genomat))
+nondupSamples <- names(table(samplestats$genocode)[table(samplestats$genocode) < 2]); length(nondupSamples) #501 non-duplicated samples
+nondupGenos <- data.frame(rs = merged_elite_genomat$rs)
+for(i in 1:length(nondupSamples)){
+  #cat(i, " ", dim(merged_elite_genomat[nondupSamples[i]]), "\n")
+  nondupGenos <- cbind(nondupGenos, 
+                       merged_elite_genomat[nondupSamples[i]])
+}
+
+dim(nondupGenos)
+
+markMat <- cbind(nondupGenos, markMat[c(goodSamples)])
+
+row.names(markMat) <- merged_elite_genomat$rs
+markMat$rs <- NULL
+
+#### Marker filtering ####
+
+# filter for mapped SNPs only?
+
+all_snps <- data.frame(Locus = rownames(markMat),
+                       stringsAsFactors = FALSE)
+
+relevant_snp_info <- left_join(all_snps, snp_map, by="Locus")
+
+mapped_snps <- relevant_snp_info$Locus[!is.na(relevant_snp_info$Chr)]
+
+if (mapped_SNPs_only){
+  markMat <- markMat[rownames(markMat) %in% mapped_snps,]
+}
+
+
+# Gather info
+# Calculate MAF (excluding missing data)
+maf <- apply(markMat, 1,
+             function(x) sum(x+1, na.rm=TRUE) / (length(na.omit(x))*2))
+# makes all allele frequencies be expressed as <0.5
+maf <- apply(cbind(maf, 1-maf), 1, min)
+
+# Site missing and heterozygosity
+siteMiss <- apply(markMat, 1,
+                  function(x) 1-(length(na.omit(x)) / length(x)))
+siteHet <- apply(markMat, 1,
+                 function(x) length(which(x == 0)) / length(na.omit(x)))
+
+# Filter on info
+
+genoFin <- markMat[maf > min_maf & siteMiss < max_site_missing & siteHet < max_site_het, ]
+
+cat("\nFiltering on MAF, SNP missingness, and SNP heterozygosity removes ",
+    round(dim(markMat)[1] - dim(genoFin)[1], 2), " SNPs.\nFor a total of ",
+    dim(genoFin)[1], " remaining SNPs.\n", sep="")
+
+### Remove redundant markers ####
+# remove direct duplicates
+genoFin_nr <- genoFin[!duplicated(genoFin),]
+corr <- nrow(genoFin)-nrow(genoFin_nr)
+
+# make a flipped version of the remaining markers that will be used to remove negatively correlated markers
+mirror_genoFin_nr <- -1*genoFin_nr
+
+temp_geno <- rbind(genoFin_nr, mirror_genoFin_nr)
+tokeep <- !duplicated(temp_geno, fromLast = T)[1:nrow(genoFin_nr)]
+anticorr <- length(which(!tokeep))
+
+genoFin_nr <- genoFin_nr[tokeep,]
+
+cat("\nFurther pruning of identical SNPs removes ",
+    dim(genoFin)[1] - dim(genoFin_nr)[1], " SNPs.\nFor a total of ",
+    dim(genoFin_nr)[1], " SNPs. (", corr, " were correlated, ", anticorr, " were anti-correlated)\n", sep="")
+# Further pruning of identical SNPs removes 32667 SNPs.
+# For a total of 73257 SNPs. (32553 were correlated, 114 were anti-correlated)
+
+rm(list=c("mirror_genoFin_nr","temp_geno"))
+
+#### Line level filtering ####
+# Individual missingness and heterozygosity after SNP filtering
+indvMiss <- apply(genoFin_nr, 2, function(x) 1-(length(na.omit(x)) / length(x)))
+sampHet <- apply(genoFin_nr, 2, function(x) length(which(x == 0)) / length(na.omit(x)))
+
+# filter lines based on missingess
+# recover the genomatrix
+genoFin_nr_lines <- genoFin_nr[, (indvMiss < max_indvMiss & sampHet < max_sampHet)]
+
+# filter lines based on missingess
+cat("\nBased on line-level missingness and heterozygosity, removed ", ncol(genoFin_nr)-ncol(genoFin_nr_lines), " lines out of ",
+    ncol(genoFin_nr), " for a final set of ", ncol(genoFin_nr_lines), " lines.", sep="")
+# Based on line-level missingness and heterozygosity, removed 14 lines out of 553 for a final set of 539 lines.
+
+# export files with names containing the number of SNPs x the number of lines, genomat is the scoring of the SNPs and params is the filtering paramters used to generate it
+filename_genomat <- paste0("../../DivPanel_Met_HH/GenoData/results/allMrks_SNPs_genomat_",nrow(genoFin_nr_lines),"x",ncol(genoFin_nr_lines),".txt")
+filename_params <- paste0("../../DivPanel_Met_HH/GenoData/results/allMrks_SNPs_params_",nrow(genoFin_nr_lines),"x",ncol(genoFin_nr_lines),".txt")
+
+filterparams <- t(data.frame(`minimum minor allele frequency` = min_maf,
+                           `maximum site missingness` = max_site_missing,
+                           `maximum site heterozygosity` = max_site_het,
+                           `maximum individual missingness` = max_indvMiss,
+                           `maximum individual heterozygosity` = max_sampHet,
+                           `total SNPs` = nrow(genoFin_nr_lines),
+                           `total lines` = ncol(genoFin_nr_lines),
+                           `use only mapped SNPs` = mapped_SNPs_only,
+                           stringsAsFactors = FALSE))
+
+write.table(t(genoFin_nr_lines), file = filename_genomat, quote = FALSE, sep = "\t")
+write.table(filterparams, file = filename_params, quote = FALSE, sep = "\t")
+```
+
+### Mapped only
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+#### Libraries ####
+library(tidyverse)
+library(data.table)
+
+#### Paramters ####
+
+# mismatch forequency for samples with multiple genotyping data
+MMfreq <- 0.10
+
+# minimum minor allele frequency
+min_maf <- 0.02
+
+# maximum site missingness
+max_site_missing <- 0.6
+
+# maximum site heterozygosity
+max_site_het <- 0.1
+
+# maximum individual missingness
+max_indvMiss <- 0.70
+
+# maximum individual heterozygosity
+max_sampHet <- 0.1
+
+# filter based on mapped SNPs?
+mapped_SNPs_only <- TRUE
+
+#### Input files ####
+
+elite_names <- fread("results/elite_t3_names.csv")
+diversity_names <- fread("results/diversity_t3_names.csv")
+t3_line_info <- fread("data/t3oat_LineRecords.csv")
+
+snp_map <- fread("data/T_AHOY_OC3_Monkey.csv")
+
+#### Make merged list of lines ####
+merged_names <- union(elite_names$t3_name, diversity_names$t3_name)
+
+cat("\nTotal (nonredundant) number of lines:", length(merged_names), "\n")
+
+#### build a table with line information ####
+line_info <- data.frame(name = merged_names,
+                        IS_DIVERSITY = merged_names %in% diversity_names$t3_name,
+                        IS_ELITE = merged_names %in% elite_names$t3_name,
+                        population = NA,
+                        program = t3_line_info$`Breeding Program`[match(merged_names, t3_line_info$Name)],
+                        stringsAsFactors = FALSE)
+
+line_info$population[line_info$IS_DIVERSITY & !line_info$IS_ELITE] <- "Diversity"
+line_info$population[line_info$IS_ELITE & !line_info$IS_DIVERSITY] <- "Elite"
+line_info$population[line_info$IS_ELITE & line_info$IS_DIVERSITY] <- "Both"
+
+
+# get the list of genotyping experiments (directory names) from the directory containing them all
+experiments <- list.files("data/t3_gbsdata/")
+
+#### load and extract the genomatrices ####
+# make a dummy dataframe for the merged genomatrix
+merged_elite_genomat <- NULL
+
+cat("\nBeginning genotype extraction...\n")
+
+# loop through each experiment, load corresponding genomatrix 
+for (genotype_experiment in experiments){
+  cat("\nGBS experiment ", genotype_experiment, "...\n", sep="")
+  geno_mat <- fread(paste0("data/t3_gbsdata/", genotype_experiment, "/genotype.hmp.txt"), header=T, data.table = FALSE)
+  colnames(geno_mat) <- gsub("\\'", "", colnames(geno_mat))
+  
+  # delete marker details (alleles	chrom	pos)
+  geno_mat <- geno_mat[,-(2:4)]
+
+  lines_to_extract <- intersect(colnames(geno_mat)[2:ncol(geno_mat)], merged_names)
+
+  extracted_geno_mat <- geno_mat[,c("rs",lines_to_extract)]
+  
+  #append experiment to line names/genocodes (in the column names)
+  colnames(extracted_geno_mat)[2:ncol(extracted_geno_mat)] <- sub("$", paste("_EXP_" , genotype_experiment, sep=""), colnames(extracted_geno_mat)[2:length(extracted_geno_mat)])
+  
+  if (is.null(merged_elite_genomat)){
+    merged_elite_genomat <- extracted_geno_mat
+  }else{
+    merged_elite_genomat <- merge(merged_elite_genomat, extracted_geno_mat, by="rs", all=TRUE)
+  }
+  rm(list=c("geno_mat","extracted_geno_mat"))
+}
+
+# split up the sample names to recover separate genocode and genotyping experiment
+splat <- t(as.data.frame(strsplit(colnames(merged_elite_genomat)[2:ncol(merged_elite_genomat)], "_EXP_")))
+
+samplestats <- data.frame(gbs_exp = colnames(merged_elite_genomat)[2:ncol(merged_elite_genomat)],
+                          genocode = splat[,1],
+                          experiment = splat[,2],
+                          #call_rate = apply(merged_elite_genomat[,2:ncol(merged_elite_genomat)], 2, function(x) (length(na.omit(x)) / length(x))),
+                          call_rate = apply(merged_elite_genomat[,2:ncol(merged_elite_genomat)], 2, function(x) (sum(is.na(x)) / length(x))),
+                          stringsAsFactors = F
+                          )
+
+# for samples that were genotyped more than once, find the samples, count the proportion of non-matching SNP calls, if proportion is < threshold then keep both,
+# for ambiguous calls set both the NA, merge
+#Function for checking for mismatches. Returns an indicator vector: if at least one mismatch then 1, else 0
+checky <- function(x){
+  if(sum(is.na(x)) < (length(x)-1)){
+    cnt <- ifelse(length(unique(na.omit(x))) == 1, 0, 1)
+  }else{
+    cnt <- NA
+  }
+  return(cnt)}
+
+noDups <- table(samplestats$genocode)
+dupSamples <- names(noDups[noDups > 1]); length(dupSamples); sum(noDups[noDups > 1]) #75 lines with multiple reps equating to 154 samples
+#histogram for number of lines with more than one genotyping experiment
+pdf("../../DivPanel_Met_HH/GenoData/Preprocessing/Hist_NoSamples.pdf", h = 4, w = 6)
+hist(noDups, xlab = "Number of genotyping experiments", ylab = "No Lines")
+dev.off()
+
+freqMismatches <- data.frame(Sample = dupSamples, MMfreq = NA)
+
+#loop through duplicate samples, check for mismatched loci, if mismatched set both to NA, if not merge experiments
+markMat <- matrix(NA, ncol = length(dupSamples), nrow = nrow(merged_elite_genomat))
+for(i in 1:length(dupSamples)){
+  tmpGenos <- merged_elite_genomat[c("rs", colnames(merged_elite_genomat)[grep(dupSamples[i], colnames(merged_elite_genomat))])] #temporary marker matrix m x sample; sample refers to samples with more than one replicate
+  noMismatch <- apply(tmpGenos[2:ncol(tmpGenos)], 1, checky)
+  tmpGenos[2:ncol(tmpGenos)][which(noMismatch > 0) ,] <- rep(NA, length(2:ncol(tmpGenos))) #replaces both loci with NA for mismatched loci
+  #MMfreq is the number of loci that are not consistent across genotyping experiments, 
+  #divided by the total number of loci detected across multiple experiments (match or mismatched)
+  freqMismatches$MMfreq[i] <- sum(noMismatch == 1, na.rm = T)/(sum(noMismatch == 1, na.rm = T) + sum(noMismatch == 0, na.rm = T))
+  
+  markMat[,i] <- apply(tmpGenos[2:ncol(tmpGenos)], 1, function(x){
+    if(sum(is.na(x)) == length(x)){
+      foo <- NA
+    }else{
+      foo <- unique(na.omit(x))
+    }
+  return(foo)})
+}
+
+colnames(markMat) <- dupSamples
+markMat <- as.data.frame(markMat) #merged marker matrix for the duplicated samples
+
+#Remove accessions with lots of mismatches
+summary(freqMismatches)
+pdf("../../DivPanel_Met_HH/GenoData/Preprocessing/Hist_NoMismatches.pdf")
+hist(freqMismatches$MMfreq, ylab = "No Lines", xlab = "MM freq")
+dev.off()
+
+goodSamples <- freqMismatches$Sample[freqMismatches$MMfreq <= MMfreq]; length(goodSamples); sum(noDups[names(noDups) %in% goodSamples]) #52 of 75; 105 samples
+
+#messy way to get marker information for nonduplicated accessions
+colnames(merged_elite_genomat) <- sub("_EXP_.*", "",colnames(merged_elite_genomat))
+nondupSamples <- names(table(samplestats$genocode)[table(samplestats$genocode) < 2]); length(nondupSamples) #501 non-duplicated samples
+nondupGenos <- data.frame(rs = merged_elite_genomat$rs)
+for(i in 1:length(nondupSamples)){
+  #cat(i, " ", dim(merged_elite_genomat[nondupSamples[i]]), "\n")
+  nondupGenos <- cbind(nondupGenos, 
+                       merged_elite_genomat[nondupSamples[i]])
+}
+
+dim(nondupGenos)
+
+markMat <- cbind(nondupGenos, markMat[c(goodSamples)])
+
+row.names(markMat) <- merged_elite_genomat$rs
+markMat$rs <- NULL
+
+#### Marker filtering ####
+
+# filter for mapped SNPs only?
+
+all_snps <- data.frame(Locus = rownames(markMat),
+                       stringsAsFactors = FALSE)
+
+relevant_snp_info <- left_join(all_snps, snp_map, by="Locus")
+
+mapped_snps <- relevant_snp_info$Locus[!is.na(relevant_snp_info$Chr)]
+
+if (mapped_SNPs_only){
+  markMat <- markMat[rownames(markMat) %in% mapped_snps,]
+}
+
+
+# Gather info
+# Calculate MAF (excluding missing data)
+maf <- apply(markMat, 1,
+             function(x) sum(x+1, na.rm=TRUE) / (length(na.omit(x))*2))
+# makes all allele frequencies be expressed as <0.5
+maf <- apply(cbind(maf, 1-maf), 1, min)
+
+# Site missing and heterozygosity
+siteMiss <- apply(markMat, 1,
+                  function(x) 1-(length(na.omit(x)) / length(x)))
+siteHet <- apply(markMat, 1,
+                 function(x) length(which(x == 0)) / length(na.omit(x)))
+
+# Filter on info
+
+genoFin <- markMat[maf > min_maf & siteMiss < max_site_missing & siteHet < max_site_het, ]
+
+cat("\nFiltering on MAF, SNP missingness, and SNP heterozygosity removes ",
+    round(dim(markMat)[1] - dim(genoFin)[1], 2), " SNPs.\nFor a total of ",
+    dim(genoFin)[1], " remaining SNPs.\n", sep="")
+
+# Filtering on MAF, SNP missingness, and SNP heterozygosity removes 7277 SNPs.
+# For a total of 36136 remaining SNPs.
+
+### Remove redundant markers ####
+# remove direct duplicates
+genoFin_nr <- genoFin[!duplicated(genoFin),]
+corr <- nrow(genoFin)-nrow(genoFin_nr)
+
+# make a flipped version of the remaining markers that will be used to remove negatively correlated markers
+mirror_genoFin_nr <- -1*genoFin_nr
+
+temp_geno <- rbind(genoFin_nr, mirror_genoFin_nr)
+tokeep <- !duplicated(temp_geno, fromLast = T)[1:nrow(genoFin_nr)]
+anticorr <- length(which(!tokeep))
+
+genoFin_nr <- genoFin_nr[tokeep,]
+
+cat("\nFurther pruning of identical SNPs removes ",
+    dim(genoFin)[1] - dim(genoFin_nr)[1], " SNPs.\nFor a total of ",
+    dim(genoFin_nr)[1], " SNPs. (", corr, " were correlated, ", anticorr, " were anti-correlated)\n", sep="")
+# Further pruning of identical SNPs removes 12732 SNPs.
+# For a total of 23404 SNPs. (12694 were correlated, 38 were anti-correlated)
+
+rm(list=c("mirror_genoFin_nr","temp_geno"))
+
+#### Line level filtering ####
+# Individual missingness and heterozygosity after SNP filtering
+indvMiss <- apply(genoFin_nr, 2, function(x) 1-(length(na.omit(x)) / length(x)))
+sampHet <- apply(genoFin_nr, 2, function(x) length(which(x == 0)) / length(na.omit(x)))
+
+# filter lines based on missingess
+# recover the genomatrix
+genoFin_nr_lines <- genoFin_nr[, (indvMiss < max_indvMiss & sampHet < max_sampHet)]
+
+# filter lines based on missingess
+cat("\nBased on line-level missingness and heterozygosity, removed ", ncol(genoFin_nr)-ncol(genoFin_nr_lines), " lines out of ",
+    ncol(genoFin_nr), " for a final set of ", ncol(genoFin_nr_lines), " lines.", sep="")
+# Based on line-level missingness and heterozygosity, removed 12 lines out of 553 for a final set of 541 lines.
+
+# export files with names containing the number of SNPs x the number of lines, genomat is the scoring of the SNPs and params is the filtering paramters used to generate it
+filename_genomat <- paste0("../../DivPanel_Met_HH/GenoData/results/mapMrks_SNPs_genomat_",nrow(genoFin_nr_lines),"x",ncol(genoFin_nr_lines),".txt")
+filename_params <- paste0("../../DivPanel_Met_HH/GenoData/results/mapMrks_SNPs_params_",nrow(genoFin_nr_lines),"x",ncol(genoFin_nr_lines),".txt")
+
+filterparams <- t(data.frame(`minimum minor allele frequency` = min_maf,
+                           `maximum site missingness` = max_site_missing,
+                           `maximum site heterozygosity` = max_site_het,
+                           `maximum individual missingness` = max_indvMiss,
+                           `maximum individual heterozygosity` = max_sampHet,
+                           `total SNPs` = nrow(genoFin_nr_lines),
+                           `total lines` = ncol(genoFin_nr_lines),
+                           `use only mapped SNPs` = mapped_SNPs_only,
+                           stringsAsFactors = FALSE))
+
+write.table(t(genoFin_nr_lines), file = filename_genomat, quote = FALSE, sep = "\t")
+write.table(filterparams, file = filename_params, quote = FALSE, sep = "\t")
+```
+
+## Imputation using glmnet
+The script is the same regardless of the SNP set. The number of jobs was adjusted so that approximately the same number of markers was used for imputation in each batch (~1000 markers). 
+```{r, echo = T, eval = F}
+#### libraries ####
+library(data.table)
+library(glmnet)
+library(argparse)
+#library(doMC)
+
+
+parser <- ArgumentParser(description = "Imputation using batch jobs")
+parser$add_argument("--arrayNo", dest="arrayNo", required=TRUE, help="Uses the array number to subset markers for imputation")
+args <- parser$parse_args()
+
+JobNo <- as.numeric(args$arrayNo)
+
+
+#### params ####
+input_file <- "allMrks_SNPs_genomat_73587x545.txt"
+ouput_file_base <- "SNPs_genomat_73587x545"
+
+# set the desired number of batches to split the markers into and cores to use
+
+#### functions ####
+
+# NOTES
+# You enter the function with a matrix, individuals in rows, markers in columns
+# I have only tested it with markers coded as -1, 0, 1 for AA, AB, and BB, but
+# other codings should work too.
+# Returns a matrix of the same dimensions, but with no missing data. Imputed values
+# are real numbers (not integers). This may be problematic for downstream mapping software.
+# by default glmnet will look at ~100 different lambda penalty coefficients.
+# It approximately doubles the speed to look at only 10 values. That probably
+# lowers the accuracy by a couple percent, but not much more.
+# Another thing that ~ doubles the speed is to do  5-fold rather than 10-fold cv
+# The thing that makes the most difference is not putting ALL the other
+# markers in as predictors, but only the top xx of them. I am using 60 now.
+impute.glmnet <- function(matNA, chunk){
+  # TY: chunk is a numeric vector of which markers to impute, so that this can be done in parallel
+  # use the batch function, below, to generate chunk vectors based on the desired number of cores to use
+  cvLambda <- exp(-(2:11))
+  # Start with mean impute
+  matNoNA <- apply(matNA, 2, function(vec){vec[is.na(vec)] <- mean(vec, na.rm=TRUE); return(vec)})
+  # I am using 60 markers for prediction.  We could experiment with this parameter.
+  # Might crash if you have fewer than nPred markers in the matrix.
+  nPred <- min(60, round(ncol(matNA) * 0.5))
+  # Function to fill in one column with glmnet impute
+  imputeMrk <- function(k){
+    varRange <- range(matNA[,k], na.rm=TRUE) # Use to prevent imputations from going outside the original range
+    isNA <- is.na(matNA[,k])
+    # If the marker is monomorphic, impute with the sole value
+    if (sd(matNA[,k], na.rm=TRUE) == 0) matNoNA[isNA,k] <<- matNA[which(!isNA)[1],k] else{
+      corMrk <- abs(cov(matNA[,k], matNA, use="pairwise.complete.obs"))
+      # Retain markers that correlate highly with marker to be imputed
+      predMrk <- setdiff(order(corMrk,decreasing=TRUE)[1:nPred], k)  
+      cvModels <- cv.glmnet(x=matNoNA[!isNA,predMrk], y=matNA[!isNA,k], nfolds=5, lambda=cvLambda,trace.it=1)
+      # The double assignment arrow puts values into matNoNA defined above
+      pred <- predict(cvModels, s="lambda.min", newx=matNoNA[isNA,predMrk, drop=FALSE])
+      #print(matNoNA[isNA,predMrk, drop=FALSE])
+      pred[pred < varRange[1]] <- varRange[1]
+      pred[pred > varRange[2]] <- varRange[2]
+      matNoNA[isNA,k] <<- pred
+    }
+    return(k)
+  }
+  
+  # TY: modification to accomodate batches for doMC parallelization
+  # and to fix the try call so it fails gracefully at the level of a marker that fails to fit
+  # (resulting in the mean value imputation being used)
+  # also got rid of sorting the markers by data missingness
+  
+  for (i in chunk){
+    try(imputeMrk(i), silent=TRUE)
+  }
+  return(matNoNA[,chunk])
+}
+
+# TY: given a number of samples (n) and desired number of batches (total_batches), returns
+# a list of vectors for each batch
+batch <- function(n, total_batches){
+  vect <- 1:n
+  nf <- cut(vect,total_batches,labels = FALSE)
+  batchlist <- split(vect, nf)
+  return(batchlist)
+}
+
+
+# import the genomat
+nJobs <- 100
+
+geno_in <- fread(input_file, data.table=FALSE)
+rownames(geno_in) <- geno_in[[1]]
+geno_in <- geno_in[,-1]
+genomat <- as.matrix(geno_in)
+
+print(genomat[1:10,1:10])
+
+batches <- batch(dim(genomat)[2], nJobs)
+
+# TY: call impute.glmnet using %dopar% in order to use multiple cores simultaneously
+
+imputed_genomat <- impute.glmnet(genomat, batches[[JobNo]])
+
+outfile <- paste0(ouput_file_base, JobNo, ".rds")
+saveRDS(imputed_genomat, outfile)
+```
+
+## Compile results
+### All markers
+74 jobs was ran, with ~1000 markers in each job.
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+path2Res <- "/Users/malachycampbell/Documents/Dropbox/Work/Oats/DivPanel_Met_HH/GenoData/results/imputed_allMrks/"
+fileNames <- paste0("allMrks_SNPs_genomat_73257x539_", 1:74, ".rds")
+
+for(i in 1:length(fileNames)){
+  tmpRes <- readRDS(paste0(path2Res, fileNames[i]))
+  
+  if(i == 1){
+    MrkData <- tmpRes
+  }else{
+    MrkData <- cbind(MrkData, tmpRes)
+  }
+}
+
+write.table(MrkData, 
+            "/Users/malachycampbell/Documents/Dropbox/Work/Oats/DivPanel_Met_HH/GenoData/results/allMrks_imp_SNPs_genomat_73257x539.txt",
+            sep = "\t", col.names = T, row.names = T, quote = F)
+```
+
+### Mapped only
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+path2Res <- "/Users/malachycampbell/Documents/Dropbox/Work/Oats/DivPanel_Met_HH/GenoData/results/imputed_mapMrks/"
+fileNames <- paste0("mapMrks_SNPs_genomat_23404x541_", 1:23, ".rds")
+
+for(i in 1:length(fileNames)){
+  tmpRes <- readRDS(paste0(path2Res, fileNames[i]))
+  
+  if(i == 1){
+    MrkData <- tmpRes
+  }else{
+    MrkData <- cbind(MrkData, tmpRes)
+  }
+}
+
+write.table(MrkData, 
+            "/Users/malachycampbell/Documents/Dropbox/Work/Oats/DivPanel_Met_HH/GenoData/results/mapMrks_imp_SNPs_genomat_23404x541.txt",
+            sep = "\t", col.names = T, row.names = T, quote = F)
+```

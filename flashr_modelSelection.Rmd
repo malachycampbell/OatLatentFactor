@@ -1,0 +1,1562 @@
+---
+title: "Matrix factorization with flashR"
+author: "Malachy Campbell"
+date: "11/7/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      root.dir = "/Users/malachycampbell/Documents/Dropbox/Work/Oats/DivPanel_Met_HH/statTargetQC/flashr/")
+```
+
+```{r, echo = T, eval = F}
+library(flashr)
+library(ebnm)
+#library(ashr)
+```
+## Objective
+The objective is to evaluate different function for Empirical Bayes Normal Means (EBNM) and variance structures. In all analyses the greedy algorithm was used as this was found to be the quickest (~10hr).
+
+### To do:
+* CV for column-wise models
+* Determine why ordering of factors is weird
+
+## Models evaluated
+Better model is one that maximizes the objective function. PVE is the percent of total variance explained by common factors. Since FA partitions total variance into common and specific variance by $$ \mathbf{Y} = \boldsymbol{\Lambda \Lambda'} + \boldsymbol{\Psi}$$
+
+Thus, PVE can be calculated as $$ PVE = \frac{\boldsymbol{\Lambda \Lambda'}}{\boldsymbol{\Lambda \Lambda'} + \boldsymbol{\Psi}}$$.
+Note that since there is no requirement for factors to be orthogonal, this expression is not accurate and is likely to inflate the true PVE explained by common effects. People have reported this in publications however it is probably not a good practice. 
+
+For SFAmix, we can calculate the total PVE or the PVE for sparse or dense factors. The values reported below for SFAmix are total(sparse). Although I evaluated different variance types for specific variance, the only that really makes sense is a column-wise specific variance. This means that each metabolite will have its own specific variance. These models were run only to examine the behavior of the objective fuction/value and the number of factors returned. Complete unique variances (i.e. row $\otimes$ column) is likely also reasonable, but is not yet implimented in flashR. 
+
+| **EBNM appoach**| **Variance Str.** | **No. of facts.** | **Objective Val.** | **PVE** | **R^2_{adj}** | **PA** | **RMSE** |
+| --------------- | ----------------- | ----------------- | ------------------ | ------- | ------------- | ------ | -------- |
+| Point normal    | Constant          | 188               | -873890.3          |  82.9   | 0.65          |        |          |
+|                 | Row               | 100*              | -927018.9*         |  69.4   | 0.58          |        |          |
+|                 | Column            | 45                | -742782.8          |  38.7   | 0.30          | 0.54   | 0.94     |
+| Laplace**       | Constant          |                   |                    |         |               |        |          |
+|                 | Row               | 194               | -860657.1          |  83.2   | 0.64          |        |          |
+|                 | Column            | 53                | -729715.5          |  39.9   | 0.30          | 0.54   | 0.96     |
+| Adapt. Shr.     | Constant          | 149               | -887934.8          |  78.9   | 0.64          |        |          |
+|                 | Row               | 200               | -858480.8          |  83.6   | 0.64          |        |          |
+|                 | Column            | 55                | -724465.9          |  40.0   | 0.29          | 0.39   | 1.55     |
+| SFAmix          | Column            | 8 (3/5 den./sp.)  | na                 |4.9 (2.5)| 0.027         |        |          |
+
+```{r, echo = F, eval = F}
+R2adj = function(PVE = NULL, N = NULL, K = NULL){ 
+  Top = (1- (PVE/100))*(N - 1)
+  Bottom = N - K - 1
+  return(1 - (Top/Bottom))
+  }
+#n = 367
+```
+
+## Orthogonal cross validation (three-fold)
+The rationale for orthogonal CV to ensure that each row and column have do not have all missing data.
+
+
+This first chunk of code will set row and column indices to assign elements of Y to training or testing sets. The row and column indices are stored in a list with seperate matrices for row and columns. The matrix for row indices are $10 \times n$ since we have 10 redraws and $n$ individuals, while the matrix for column indices are $10 \times p$ where $p$ is the number of metabolites. 
+```{r, echo = T, eval = F}
+##################
+## First try CV ##
+##################
+
+# three folds
+# 10 redraws
+# 3 EBNM methods
+# 90 jobs
+
+#########################################################
+# First Part: set folds for individuals and metabolites #
+#########################################################
+
+nInds = 367
+nMets = 1668
+nDraws = 10
+seedNo = 1984
+
+rowMat <- matrix(NA, nrow = nDraws, ncol = nInds)
+colMat <- matrix(NA, nrow = nDraws, ncol = nMets)
+
+for(i in 1:10){ #since we're doing 10 redraws
+  #long-winded way to ensure that all the folds have approx. equal number of samples
+  rowIndx <- rep(1:3, each = ceiling(nInds/3))
+  set.seed(seedNo + i)
+  rowMat[i,] <- rowIndx[sample(1:length(rowIndx), size = nInds, replace = F)]
+  
+  colIndx <- rep(1:3, each = ceiling(nMets/3))
+  set.seed(seedNo + i)
+  colMat[i,] <- colIndx[sample(1:length(colIndx), size = nMets, replace = F)]
+}
+
+saveRDS(list(indFolds = rowMat,
+             metFolds = colMat),
+        "CV/foldInfo.rds")
+```
+
+
+With OCV we are essentially partitioning our data into sub matrices, so that for each fold we have rows and columns that are not missing all information (i.e. we are not completely predicting a new metabolite or individual, we are only imputing missing data). So suppose we have three folds. We can parition the rows of Y into three sets and the columns of Y into three sets. We can partition the matrix Y into 9 subsets (3 x 3 block matrix?). For fold 1 we will mask observations for the followingsubmatrices Y11, Y22, and Y33. In other words for cells from individuals in fold 1 (rows) and metabolites in fold 1 (columns) the data will be set to missing (Y11 = NA). This is also done for Y22 (fold 2 (rows) and metabolites in fold 2 (columns)), and Y33. So our testing data will be all the observations in Y11, Y22, and Y33. For the other two testing sets the submatrices are Y12, Y23 and Y31, and Y13, Y21 and Y32
+
+
+The code below will take the indices created above, mask elements and run the appropriate model. The code is anything but elegant, but it works.
+```{r, echo = T, eval = F}
+library(argparse)
+library(ebnm)
+library(ashr)
+library(flashr)
+
+##############################################################
+# Second Part: run OCV to determine best parameters/approach #
+##############################################################
+
+parser <- ArgumentParser(description = "Three-fold orthogonal cross validation - split jobs based on the array number")
+parser$add_argument("--arrayNo", dest="arrayNo", required=TRUE, help="Uses the array number to determine which parameters and redraw to run")
+args <- parser$parse_args()
+
+JobNo <- as.numeric(args$arrayNo)
+
+##Load BLUPs
+BLUPs <-  as.matrix(read.delim("../BLUPs.txt", sep = "\t", header = T, row.names = 1)) #n x p
+cat("\n BLUPs file loaded \n")
+
+
+############################
+## Set up indicies for CV ##
+############################
+
+#EBNM approaches: 3 
+ebmns <- c("ebnm_ash", "ebnm_pn", "ebnm_pl") #use get to specify these as flashr treats them as objects/functions
+
+indxTable <- data.frame(JobNo = 1:90, EBMNno = rep(1:3, each = 30), 
+                        redrawNo = rep(1:10, each = 3), foldNo = rep(1:3, 30))
+
+
+#Find the type of EBNM approach to run and indices for CV
+tmpEBMNno <- ebmns[as.numeric(indxTable[JobNo,][2])]
+tmpredrawNo <- as.numeric(indxTable[JobNo,][3])
+tmpfldNo <- as.numeric(indxTable[JobNo,][4])
+
+#define the submatrices that correspond to fold 1,2 or 3
+OCVsets <- list(fold1 = rbind(c(1,2,3),
+                              c(1,2,3)),
+                fold2 = rbind(c(1,2,3),
+                              c(2,3,1)),
+                fold3 = rbind(c(1,2,3),
+                              c(3,1,2))) #first specifies the row index of Y, second row specifies the column index
+
+#######################
+## Mask observations ##
+#######################
+
+#load data that assigns cells in Y to folds
+fldAssign <- readRDS("foldInfo.rds")
+
+#which submatrices to mask for fold
+tmpset <- OCVsets[[tmpfldNo]]
+
+trnBLUPs <- BLUPs
+trnBLUPs[which(fldAssign$indFolds[tmpredrawNo,] == tmpset[1,1]), 
+         which(fldAssign$metFolds[tmpredrawNo,] == tmpset[2,1])] <- NA #first submatrix
+trnBLUPs[which(fldAssign$indFolds[tmpredrawNo,] == tmpset[1,2]), 
+         which(fldAssign$metFolds[tmpredrawNo,] == tmpset[2,2])] <- NA #second submatrix
+trnBLUPs[which(fldAssign$indFolds[tmpredrawNo,] == tmpset[1,3]), 
+         which(fldAssign$metFolds[tmpredrawNo,] == tmpset[2,3])] <- NA #third submatrix
+
+##############
+## Run EBMF ##
+##############
+
+dat <- flash_set_data(as.matrix(trnBLUPs))
+cat("\n converted to flash set \n")
+
+cat("\n starting greedy approach \n")
+facts <- flash_add_greedy(dat, Kmax = 100, f_init = NULL, var_type = "by_column",
+                          verbose = T, seed = 123, ebnm_fn  = tmpEBMNno)
+
+facts_bf <- flash_backfit(dat, facts, var_type = "by_column",
+                          verbose = T, ebnm_fn = tmpEBMNno, maxiter = 10000)
+
+saveRDS(facts_bf, 
+        paste0(tmpEBMNno, "_factsbf_fold", tmpfldNo, "_draw", tmpredrawNo,".rds"))
+```
+
+Calculation of RMSE is provided under the 'CV' headers below for each methods. All analyses use the same indices established above.
+
+## Point normal 
+
+### Constant
+```{r, echo = T, eval = F}
+BLUPs <- read.delim("../sFAmix/BLUPs.txt", sep = "\t", header = T, row.names = 1)
+dat <- flash_set_data(as.matrix(BLUPs))
+factsbf <- readRDS("Greedy_pn/constant/factsbf_greedy.rds")#results from backfitting algorithm
+
+#
+factsbf$objective #-873890.2
+factsbf$nfactors #get number of factors: 188
+
+#Get PVE
+summary(factsbf$pve)
+#      Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+# 0.0009092 0.0021239 0.0030232 0.0044070 0.0041917 0.0561113
+sum(factsbf$pve)*100
+```
+
+### Row
+Needs to be rerun with higher Kmax.
+```{r, echo = T, eval = F}
+BLUPs <- read.delim("../sFAmix/BLUPs.txt", sep = "\t", header = T, row.names = 1)
+dat <- flash_set_data(as.matrix(BLUPs))
+factsbf <- readRDS("Greedy_pn/row/factsbf_greedy.rds")#results from backfitting algorithm
+
+#
+factsbf$objective #-927018.9
+factsbf$nfactors #get number of factors: 100
+
+#Get PVE
+summary(factsbf$pve)
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#0.002565 0.003510 0.004701 0.006936 0.006632 0.058084 
+sum(factsbf$pve)*100
+#69.3634
+```
+
+### Column
+
+```{r, echo = T, eval = F}
+BLUPs <- read.delim("../sFAmix/BLUPs.txt", sep = "\t", header = T, row.names = 1)
+factsbf <- readRDS("Greedy_pn/column/factsbf_greedy.rds")#results from backfitting algorithm
+
+#
+factsbf$objective #-742782.8
+factsbf$nfactors #get number of factors: 45
+
+#Get PVE
+sum(factsbf$pve)*100 #38.74258
+summary(factsbf$pve)
+#      Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+# 0.0002405 0.0030078 0.0049527 0.0086095 0.0090026 0.0624215
+```
+
+#### CV
+
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+ebnmNo <- 2
+
+fldAssign <- readRDS("CV/foldInfo.rds")
+BLUPs <- as.matrix(read.delim("../sFAmix/BLUPs.txt", sep = "\t", header = T, row.names = 1))
+
+indxTable <- data.frame(JobNo = 1:90, EBMNno = rep(1:3, each = 30), 
+                        redrawNo = rep(1:10, each = 3), foldNo = rep(1:3, 30))
+
+indxTable <- indxTable[indxTable$EBMNno == ebnmNo ,]
+
+ResMat <- NULL
+
+#define the submatrices that correspond to fold 1,2 or 3
+OCVsets <- list(fold1 = rbind(c(1,2,3),
+                              c(1,2,3)),
+                fold2 = rbind(c(1,2,3),
+                              c(2,3,1)),
+                fold3 = rbind(c(1,2,3),
+                              c(3,1,2))) #first specifies the row index of Y, second row specifies the column index
+
+
+
+#EBNM approaches: 3 
+ebmns <- c("ebnm_ash", "ebnm_pn", "ebnm_pl") #use to construct filenames for CV runs/folds
+
+#for each redraw
+for (redraw in 1:10){
+  
+  #for each fold
+  for(fold in 1:3){
+    tmpset <- OCVsets[[fold]]
+    
+    fileName <- paste0(ebmns[ebnmNo], "_factsbf_fold", fold, "_draw", redraw, ".rds")
+    tmpRes <- readRDS(paste0("CV/", fileName))
+    
+    tmpNofacts <- tmpRes$nfactors #number of factors
+    yhats <- tmpRes$fitted_values #predicted values
+    yhats_trn <- yhats
+    yhats_tst <- yhats
+    BLUPs_trn <- BLUPs
+    BLUPs_tst <- BLUPs
+    
+    #get yhats only for training set
+    yhats_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,1]),
+              which(fldAssign$metFolds[redraw,] == tmpset[2,1])] <- NA #first submatrix
+    yhats_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,2]), 
+              which(fldAssign$metFolds[redraw,] == tmpset[2,2])] <- NA #second submatrix
+    yhats_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,3]), 
+              which(fldAssign$metFolds[redraw,] == tmpset[2,3])] <- NA #third submatrix
+    
+    #BLUPs for training
+    BLUPs_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,1]), 
+              which(fldAssign$metFolds[redraw,] == tmpset[2,1])] <- NA #first submatrix
+    BLUPs_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,2]), 
+              which(fldAssign$metFolds[redraw,] == tmpset[2,2])] <- NA #second submatrix
+    BLUPs_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,3]), 
+              which(fldAssign$metFolds[redraw,] == tmpset[2,3])] <- NA #third submatrix
+    
+    yhats_tst[!is.na(yhats_trn)] <- NA
+    BLUPs_tst[!is.na(BLUPs_trn)] <- NA
+    
+    SqErr <- (as.vector(BLUPs_tst) - as.vector(yhats_tst))^2
+    RMSE <- sqrt(sum(SqErr, na.rm = T)/sum(is.na(SqErr)))
+    
+    COR <- cor(as.vector(BLUPs_tst), as.vector(yhats_tst), use = "complete.obs")
+    
+    ResMat <- rbind(ResMat, 
+                    c(redraw, fold, RMSE, COR, tmpNofacts))
+  }
+}
+
+colnames(ResMat) <- c("Redraw", "Fold", "RMSE", "COR", "nFacts")
+ResMat <- as.data.frame(ResMat)
+ResMat$ebnm <- ebmns[ebnmNo]
+write.table(ResMat, "CV/CV_ebnm_pn.txt", sep = "\t", col.names = T, row.names = F, quote = F)
+```
+
+## Adaptive shrinkage
+
+### Constant
+
+```{r, echo = T, eval = F}
+BLUPs <- read.delim("../sFAmix/BLUPs.txt", sep = "\t", header = T, row.names = 1)
+dat <- flash_set_data(as.matrix(BLUPs))
+factsbf <- readRDS("Greedy_ash/constant/factsbf_greedy.rds")#results from backfitting algorithm
+
+#
+factsbf$objective #-887934.8
+factsbf$nfactors #get number of factors: 200
+
+#Get PVE
+summary(factsbf$pve)
+#      Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+# 0.0009527 0.0020165 0.0027834 0.0041876 0.0044059 0.0567139 
+sum(factsbf$pve)*100 #83.6
+```
+
+### Row
+```{r, echo = T, eval = F}
+BLUPs <- read.delim("../sFAmix/BLUPs.txt", sep = "\t", header = T, row.names = 1)
+factsbf <- readRDS("Greedy_ash/row/factsbf_greedy.rds")#results from backfitting algorithm
+
+#
+factsbf$objective #-858480.8
+factsbf$nfactors #get number of factors: 200
+
+#Get PVE
+summary(factsbf$pve)
+#     Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+# 0.001571 0.002689 0.003795 0.005296 0.005504 0.055254
+sum(factsbf$pve)*100 #78.9
+```
+
+### Column
+
+```{r, echo = T, eval = F}
+BLUPs <- read.delim("../sFAmix/BLUPs.txt", sep = "\t", header = T, row.names = 1)
+#factsbf <- readRDS("Greedy_ash/column/factsbf_greedy.rds")#results from backfitting algorithm
+
+#
+factsbf$objective #-724465.9
+factsbf$nfactors #get number of factors: 55
+
+#Get PVE
+summary(factsbf$pve)
+#      Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+# 0.0002969 0.0022456 0.0042902 0.0072724 0.0070376 0.0594920 
+sum(factsbf$pve)*100 #40.0
+```
+
+Exploring the data.
+```{r, echo = T, eval = F}
+factsbf$pve #get PVE by each factor. May be misleading since the factors are not orthogonal
+#  [1] 0.0594919956 0.0223790983 0.0165663716 0.0131203384 0.0333153855 0.0101867355 0.0060176820
+#  [8] 0.0139931925 0.0079488531 0.0020035895 0.0058790616 0.0036048797 0.0059275037 0.0079996230
+# [15] 0.0057367858 0.0055503141 0.0022370124 0.0046487207 0.0393490063 0.0028128631 0.0009922716
+# [22] 0.0026804611 0.0050640323 0.0078591275 0.0060295760 0.0013734045 0.0061452991 0.0087881183
+# [29] 0.0047875721 0.0035014965 0.0042901454 0.0031049453 0.0022542366 0.0033446736 0.0038840044
+# [36] 0.0019549918 0.0062160335 0.0024340942 0.0053960979 0.0030116920 0.0112009258 0.0009620815
+# [43] 0.0002969166 0.0017939716 0.0026089161 0.0025250644 0.0108050670 0.0015117576 0.0042049144
+# [50] 0.0008725711 0.0013248195 0.0022191787 0.0020804384 0.0003343954 0.0053573357
+
+# generate a scree plot to make this more accessable/digestable
+pdf("Greedy_ash/column/scree_columnBF.pdf", h = 3, w = 5, useDingbats = F, pointsize = 10)
+par(mar=c(4,3.5,1.5,1.5), mgp=c(1.8,0.5,0))
+plot(1:length(factsbf$pve), factsbf$pve, type = "b", xlab = "Factor Number", ylab = "% var. expl.", pch = 19, cex = 0.75, col = "grey50")
+dev.off() 
+```
+
+Rank factors, get top 10, and explore/plot loadings for top mets
+```{r, echo = T, eval = F}
+PVE <- factsbf$pve
+lds <- factsbf$ldf$f #loadings met x k
+
+Annot.GC <- read.csv("../../../TrevorOats/20190823_MS_signal_processing/results/GCMS_2018_GC.03_annotation.csv")[c(1,3,4,9:14)]
+Annot.LC <- read.csv("../../../TrevorOats/20190823_MS_signal_processing/results/LCMS_2018_LC.03_annotation.csv")[c(1,3,4,16:21)]
+Annot <- rbind(Annot.GC, Annot.LC)
+rm(Annot.LC, Annot.GC)
+
+exploreTopLds <- function(pve = NULL, lds = NULL, nFacts = NULL, nCmpds = NULL, ldThrsh = NULL){
+  
+  tmpLds <- lds[, order(pve, decreasing = T)[1:nFacts] ] #get only the loadings for the top factors
+  topList <- list()
+  for(i in 1:nFacts){ 
+    #loop through columns of loadings, order by absolute value, 
+    #and extract top nCmpds
+    if(!is.null(nCmpds)){
+      topList[[paste0("factor_", i)]] <- tmpLds[order(abs(tmpLds[,i]), 
+                                                      decreasing = T),][,i][1:nCmpds]
+    }else{
+      topList[[paste0("factor_", i)]] <- tmpLds[abs(tmpLds[,i]) >= ldThrsh ,][,i][1:nCmpds]
+    }
+  }
+  return(topList)
+}
+
+getAnnots <- function(annots = NULL, cmpds = NULL, annType = NULL, idCol = NULL){
+  #extracts a set of annotations based on annType for a set of compounds; annType determines the type of annotation and should match the appropriate column in annots
+  cmpds <- data.frame(cmpds)
+  tmpAnnot <- annots[c(idCol, annType)]
+  colnames(tmpAnnot) <- c("x", "ann")
+  tmpAnnot <- merge(tmpAnnot, cmpds, by.x = "x", by.y = 0, all.x = F, all.y = T)
+  colnames(tmpAnnot) <- c("cmpd", "annot", "lds")
+  tmpAnnot <- tmpAnnot[order(abs(tmpAnnot$lds), decreasing = T) ,]
+  return(tmpAnnot)
+}
+
+#debugonce(exploreTopLds)
+
+topFacts <- exploreTopLds(pve = PVE, lds = lds, nFacts = 55, nCmpds = nrow(lds), ldThrsh = NULL)
+
+debugonce(getAnnots)
+topAnnots <- lapply(topFacts, getAnnots, annot = Annot, annType = "class", idCol = "cmpd")
+
+pdf("Greedy_ash/column/Lds.pdf", width = 5, height = 5, useDingbats = F)
+par(mar=c(12, 3.5, 1.5, 1)) #bottom, left, top, and right margins respecively default c(5, 4, 4, 2)
+par(mgp=c(2.25,1,0))
+
+for(i in 1:55){
+  tmpData <- topAnnots[[i]]
+  tmpData <- na.omit(tmpData)
+  tmpData$label <- paste0(tmpData$annot, " (", tmpData$cmpd, ")")
+  
+  mp = barplot(tmpData$lds, space = 0.8, ylab = "Fact. Ldg.", cex.axis = 0.5, main = paste0("Factor ", i, "(PVE: ", round(PVE[i]*100, 2), ")"))
+  axis(1, at = mp[,1], labels = tmpData$label, cex.axis = 0.5, las = 2, padj = 0.5, adj = 1)
+  # text(x = mp[,1], y = 0 - max(tmpData$lds)*0.15, labels = tmpData$annot, 
+  #      las = 2, xpd = TRUE, srt = 90, cex = 0.25, adj = 1)
+}
+dev.off()
+```
+
+#### CV
+
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+ebnmNo <- 1
+
+fldAssign <- readRDS("CV/foldInfo.rds")
+BLUPs <- as.matrix(read.delim("../sFAmix/BLUPs.txt", sep = "\t", header = T, row.names = 1))
+
+indxTable <- data.frame(JobNo = 1:90, EBMNno = rep(1:3, each = 30), 
+                        redrawNo = rep(1:10, each = 3), foldNo = rep(1:3, 30))
+
+indxTable <- indxTable[indxTable$EBMNno == ebnmNo ,]
+
+ResMat <- NULL
+
+#define the submatrices that correspond to fold 1,2 or 3
+OCVsets <- list(fold1 = rbind(c(1,2,3),
+                              c(1,2,3)),
+                fold2 = rbind(c(1,2,3),
+                              c(2,3,1)),
+                fold3 = rbind(c(1,2,3),
+                              c(3,1,2))) #first specifies the row index of Y, second row specifies the column index
+
+
+
+#EBNM approaches: 3 
+ebmns <- c("ebnm_ash", "ebnm_pn", "ebnm_pl") #use to construct filenames for CV runs/folds
+
+#for each redraw
+for (redraw in 1:10){
+  
+  #for each fold
+  for(fold in 1:3){
+    tmpset <- OCVsets[[fold]]
+    
+    fileName <- paste0(ebmns[ebnmNo], "_factsbf_fold", fold, "_draw", redraw, ".rds")
+    tmpRes <- readRDS(paste0("CV/", fileName))
+    
+    tmpNofacts <- tmpRes$nfactors #number of factors
+    yhats <- tmpRes$fitted_values #predicted values
+    yhats_trn <- yhats
+    yhats_tst <- yhats
+    BLUPs_trn <- BLUPs
+    BLUPs_tst <- BLUPs
+    
+    #get yhats only for training set
+    yhats_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,1]),
+              which(fldAssign$metFolds[redraw,] == tmpset[2,1])] <- NA #first submatrix
+    yhats_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,2]), 
+              which(fldAssign$metFolds[redraw,] == tmpset[2,2])] <- NA #second submatrix
+    yhats_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,3]), 
+              which(fldAssign$metFolds[redraw,] == tmpset[2,3])] <- NA #third submatrix
+    
+    #BLUPs for training
+    BLUPs_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,1]), 
+              which(fldAssign$metFolds[redraw,] == tmpset[2,1])] <- NA #first submatrix
+    BLUPs_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,2]), 
+              which(fldAssign$metFolds[redraw,] == tmpset[2,2])] <- NA #second submatrix
+    BLUPs_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,3]), 
+              which(fldAssign$metFolds[redraw,] == tmpset[2,3])] <- NA #third submatrix
+    
+    yhats_tst[!is.na(yhats_trn)] <- NA
+    BLUPs_tst[!is.na(BLUPs_trn)] <- NA
+    
+    SqErr <- (as.vector(BLUPs_tst) - as.vector(yhats_tst))^2
+    RMSE <- sqrt(sum(SqErr, na.rm = T)/sum(is.na(SqErr)))
+    
+    COR <- cor(as.vector(BLUPs_tst), as.vector(yhats_tst), use = "complete.obs")
+
+    ResMat <- rbind(ResMat, 
+                    c(redraw, fold, RMSE, COR, tmpNofacts))
+  }
+}
+
+colnames(ResMat) <- c("Redraw", "Fold", "RMSE", "COR", "nFacts")
+ResMat <- as.data.frame(ResMat)
+ResMat$ebnm <- ebmns[ebnmNo]
+
+write.table(ResMat, "CV/CV_ebnm_ash.txt", sep = "\t", col.names = T, row.names = F, quote = F)
+```
+
+## Laplace
+
+### Constant
+Did not finish after 48+ hrs.
+```{r, echo = T, eval = F}
+BLUPs <- read.delim("../sFAmix/BLUPs.txt", sep = "\t", header = T, row.names = 1)
+factsbf <- readRDS("Greedy_pl/constant/factsbf_greedy.rds")#results from backfitting algorithm
+
+#
+factsbf$objective #-724465.9
+factsbf$nfactors #get number of factors: 55
+
+#Get PVE
+summary(factsbf$pve)
+#      Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+# 0.0002969 0.0022456 0.0042902 0.0072724 0.0070376 0.0594920 
+sum(factsbf$pve)*100 #40.0
+```
+
+### Column
+
+```{r, echo = T, eval = F}
+BLUPs <- read.delim("../sFAmix/BLUPs.txt", sep = "\t", header = T, row.names = 1)
+factsbf <- readRDS("Greedy_pl/column/factsbf_greedy.rds")#results from backfitting algorithm
+
+#
+factsbf$objective #-729715.5
+factsbf$nfactors #get number of factors: 53
+
+#Get PVE
+summary(factsbf$pve)
+#      Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+# 0.0002424 0.0028893 0.0046162 0.0075294 0.0067273 0.0588116
+sum(factsbf$pve)*100 #39.9
+```
+
+### Row
+```{r, echo = T, eval = F}
+BLUPs <- read.delim("../sFAmix/BLUPs.txt", sep = "\t", header = T, row.names = 1)
+factsbf <- readRDS("Greedy_pl/row/factsbf_greedy.rds")#results from backfitting algorithm
+
+#
+factsbf$objective #-860657.1
+factsbf$nfactors #get number of factors: 194
+
+#Get PVE
+summary(factsbf$pve)
+#     Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+# 0.001158 0.002095 0.002896 0.004290 0.004413 0.056687 
+sum(factsbf$pve)*100 #83.2
+```
+
+
+#### CV
+
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+ebnmNo <- 3
+
+fldAssign <- readRDS("CV/foldInfo.rds")
+BLUPs <- as.matrix(read.delim("../sFAmix/BLUPs.txt", sep = "\t", header = T, row.names = 1))
+
+indxTable <- data.frame(JobNo = 1:90, EBMNno = rep(1:3, each = 30), 
+                        redrawNo = rep(1:10, each = 3), foldNo = rep(1:3, 30))
+
+indxTable <- indxTable[indxTable$EBMNno == ebnmNo ,]
+
+ResMat <- NULL
+
+#define the submatrices that correspond to fold 1,2 or 3
+OCVsets <- list(fold1 = rbind(c(1,2,3),
+                              c(1,2,3)),
+                fold2 = rbind(c(1,2,3),
+                              c(2,3,1)),
+                fold3 = rbind(c(1,2,3),
+                              c(3,1,2))) #first specifies the row index of Y, second row specifies the column index
+
+
+
+#EBNM approaches: 3 
+ebmns <- c("ebnm_ash", "ebnm_pn", "ebnm_pl") #use to construct filenames for CV runs/folds
+
+#for each redraw
+for (redraw in 1:10){
+  
+  #for each fold
+  for(fold in 1:3){
+    tmpset <- OCVsets[[fold]]
+    
+    fileName <- paste0(ebmns[ebnmNo], "_factsbf_fold", fold, "_draw", redraw, ".rds")
+    tmpRes <- readRDS(paste0("CV/", fileName))
+    
+    tmpNofacts <- tmpRes$nfactors #number of factors
+    yhats <- tmpRes$fitted_values #predicted values
+    yhats_trn <- yhats
+    yhats_tst <- yhats
+    BLUPs_trn <- BLUPs
+    BLUPs_tst <- BLUPs
+    
+    #get yhats only for training set
+    yhats_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,1]),
+              which(fldAssign$metFolds[redraw,] == tmpset[2,1])] <- NA #first submatrix
+    yhats_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,2]), 
+              which(fldAssign$metFolds[redraw,] == tmpset[2,2])] <- NA #second submatrix
+    yhats_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,3]), 
+              which(fldAssign$metFolds[redraw,] == tmpset[2,3])] <- NA #third submatrix
+    
+    #BLUPs for training
+    BLUPs_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,1]), 
+              which(fldAssign$metFolds[redraw,] == tmpset[2,1])] <- NA #first submatrix
+    BLUPs_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,2]), 
+              which(fldAssign$metFolds[redraw,] == tmpset[2,2])] <- NA #second submatrix
+    BLUPs_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,3]), 
+              which(fldAssign$metFolds[redraw,] == tmpset[2,3])] <- NA #third submatrix
+    
+    yhats_tst[!is.na(yhats_trn)] <- NA
+    BLUPs_tst[!is.na(BLUPs_trn)] <- NA
+    
+    SqErr <- (as.vector(BLUPs_tst) - as.vector(yhats_tst))^2
+    RMSE <- sqrt(sum(SqErr, na.rm = T)/sum(is.na(SqErr)))
+    
+    COR <- cor(as.vector(BLUPs_tst), as.vector(yhats_tst), use = "complete.obs")
+    
+    ResMat <- rbind(ResMat, 
+                  c(redraw, fold, RMSE, COR, tmpNofacts))
+  }
+}
+
+colnames(ResMat) <- c("Redraw", "Fold", "RMSE", "COR", "nFacts")
+ResMat <- as.data.frame(ResMat)
+ResMat$ebnm <- ebmns[ebnmNo]
+
+write.table(ResMat, "CV/CV_ebnm_pl.txt", sep = "\t", col.names = T, row.names = F, quote = F)
+```
+
+### Compile CV results
+
+```{r, echo = T, eval = F}
+library(plyr)
+library(cowplot)
+
+rm(list = ls())
+
+CVs <- rbind(read.delim("CV/CV_ebnm_ash.txt", header = T, sep = "\t"),
+             read.delim("CV/CV_ebnm_pl.txt", header = T, sep = "\t"),
+             read.delim("CV/CV_ebnm_pn.txt", header = T, sep = "\t"))
+
+CVs <- ddply(CVs, .(Redraw, ebnm), summarise, RMSE = mean(RMSE), COR = mean(COR), nFacts = mean(nFacts))
+
+ddply(CVs, .(ebnm), summarise, RMSE = mean(RMSE),
+      COR = mean(COR), nFacts = mean(nFacts))
+
+#       ebnm      RMSE       COR   nFacts
+# 1 ebnm_ash 1.5496709 0.3912193 35.26667
+# 2  ebnm_pl 0.9634319 0.5433190 29.53333
+# 3  ebnm_pn 0.9445831 0.5545963 26.66667
+
+RMSEplot <- ggplot(CVs, aes(x = ebnm, y = RMSE, fill = ebnm)) +
+            geom_boxplot(outlier.colour = "black", outlier.shape = 19,
+                outlier.size = 1) +
+            xlab("EBNM appr.") +
+            ylab("RMSE") +
+            scale_fill_manual(values = c(wes_palette("Royal2")[3:5])) +
+            theme_bw() +
+            theme(legend.position = "none") +
+            theme(axis.title.y = element_text(size = 8, 
+                                              angle = 90,face="bold")) + 
+            theme(axis.title.x = element_text(size = 8, 
+                                              angle = 00,face="bold")) +
+            theme(axis.text.x = element_text(size = 6, 
+                                             angle = 00, vjust = 0.5, 
+                                             hjust = 0.5)) +
+            theme(axis.text.y = element_text(size = 6, 
+                                             angle = 00))
+
+Rplot <- ggplot(CVs, aes(x = ebnm, y = COR, fill = ebnm)) +
+            geom_boxplot(outlier.colour = "black", outlier.shape = 19,
+                outlier.size = 1) +
+            xlab("EBNM appr.") +
+            ylab("r") +
+            scale_fill_manual(values = c(wes_palette("Royal2")[3:5])) +
+            theme_bw() +
+            theme(legend.position = "none") +
+            theme(axis.title.y = element_text(size = 8, 
+                                              angle = 90,face="bold")) + 
+            theme(axis.title.x = element_text(size = 8, 
+                                              angle = 00,face="bold")) +
+            theme(axis.text.x = element_text(size = 6, 
+                                             angle = 00, vjust = 0.5, 
+                                             hjust = 0.5)) +
+            theme(axis.text.y = element_text(size = 6, 
+                                             angle = 00))
+
+Factplot <- ggplot(CVs, aes(x = ebnm, y = nFacts, fill = ebnm)) +
+            geom_boxplot(outlier.colour = "black", outlier.shape = 19,
+                outlier.size = 1) +
+            xlab("EBNM appr.") +
+            ylab("r") +
+            scale_fill_manual(values = c(wes_palette("Royal2")[3:5])) +
+            theme_bw() +
+            theme(legend.position = "none") +
+            theme(axis.title.y = element_text(size = 8, 
+                                              angle = 90,face="bold")) + 
+            theme(axis.title.x = element_text(size = 8, 
+                                              angle = 00,face="bold")) +
+            theme(axis.text.x = element_text(size = 6, 
+                                             angle = 00, vjust = 0.5, 
+                                             hjust = 0.5)) +
+            theme(axis.text.y = element_text(size = 6, 
+                                             angle = 00))
+
+pdf("CV/CVres.pdf", h = 2.7, w = 5)
+  plot_grid(RMSEplot, Rplot, ncol = 2, nrow = 1)
+dev.off()
+```
+
+
+
+
+
+# Scaling BLUPs
+In the original analyses I did not scale and standardize BLUPs, thus the data was close to the original scale, and may have influenced the results. I repeated the model selection approach above and reran CV to assess which model was the best fit to the data. Below are the results.
+
+```{r, echo = F, eval = F}
+R2adj = function(PVE = NULL, N = NULL, K = NULL){ 
+  Top = (1- (PVE/100))*(N - 1)
+  Bottom = N - K - 1
+  return(1 - (Top/Bottom))
+  }
+```
+
+| **EBNM appoach**| **Variance Str.** | **No. of facts.** | **Objective Val.** | **PVE** | **R^2_{adj}** | **PA** | **RMSE** |
+| --------------- | ----------------- | ----------------- | ------------------ | ------- | ------------- | ------ | -------- |
+| Adapt. Shr.     | Column            | 102               | -581716.3          |  59.41  | 0.438         | 0.322  | 1.451    |
+| Laplace         | Column            | 100               | -584317.2          |  58.82  | 0.434         | 0.520  | 0.970    |
+| Point Normal    | Column            | 106               | -583809.9          |  59.36  | 0.429         | 0.514  | 0.978    |
+
+### Adaptive shrinkage
+
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+factsbf <- readRDS("Greedy_ash/column_sc/factsbf_greedy_sc.rds")#results from backfitting algorithm
+
+#
+factsbf$objective #-581716.3
+factsbf$nfactors #get number of factors: 102
+
+#Get PVE
+summary(factsbf$pve)
+#      Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+# 0.0006263 0.0021191 0.0030887 0.0058241 0.0058235 0.0796737 
+sum(factsbf$pve)*100 #59.40549
+
+R2adj(PVE = sum(factsbf$pve)*100, N = 368, K = 102) #0.4378043
+```
+
+#### CV
+
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+ebnmNo <- 1
+#EBNM approaches: 3 
+ebmns <- c("ebnm_ash", "ebnm_pn", "ebnm_pl") #use to construct filenames for CV runs/folds
+
+fldAssign <- readRDS("CV/scaled/foldInfo.rds")
+BLUPs <- as.matrix(read.delim("../sFAmix/BLUPs.txt", sep = "\t", header = T, row.names = 1))
+
+indxTable <- data.frame(JobNo = 1:90, EBMNno = rep(1:3, each = 30), 
+                        redrawNo = rep(1:10, each = 3), foldNo = rep(1:3, 30))
+
+indxTable <- indxTable[indxTable$EBMNno == ebnmNo ,]
+
+ResMat <- NULL
+
+#define the submatrices that correspond to fold 1,2 or 3
+OCVsets <- list(fold1 = rbind(c(1,2,3),
+                              c(1,2,3)),
+                fold2 = rbind(c(1,2,3),
+                              c(2,3,1)),
+                fold3 = rbind(c(1,2,3),
+                              c(3,1,2))) #first specifies the row index of Y, second row specifies the column index
+
+
+#for each redraw
+for (redraw in 1:10){
+  
+  #for each fold
+  for(fold in 1:3){
+    tmpset <- OCVsets[[fold]]
+    
+    fileName <- paste0(ebmns[ebnmNo], "_factsbf_fold", fold, "_draw", redraw, ".rds")
+    if(file.exists(paste0("CV/scaled/", fileName))){
+      tmpRes <- readRDS(paste0("CV/scaled/", fileName))
+      tmpNofacts <- tmpRes$nfactors #number of factors
+      yhats <- tmpRes$fitted_values #predicted values
+      yhats_trn <- yhats
+      yhats_tst <- yhats
+      BLUPs_trn <- BLUPs
+      BLUPs_tst <- BLUPs
+    
+      #get yhats only for training set
+      yhats_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,1]),
+                which(fldAssign$metFolds[redraw,] == tmpset[2,1])] <- NA #first submatrix
+      yhats_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,2]), 
+                which(fldAssign$metFolds[redraw,] == tmpset[2,2])] <- NA #second submatrix
+      yhats_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,3]), 
+                which(fldAssign$metFolds[redraw,] == tmpset[2,3])] <- NA #third submatrix
+    
+      #BLUPs for training
+      BLUPs_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,1]), 
+                which(fldAssign$metFolds[redraw,] == tmpset[2,1])] <- NA #first submatrix
+      BLUPs_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,2]), 
+                which(fldAssign$metFolds[redraw,] == tmpset[2,2])] <- NA #second submatrix
+      BLUPs_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,3]), 
+                which(fldAssign$metFolds[redraw,] == tmpset[2,3])] <- NA #third submatrix
+    
+      yhats_tst[!is.na(yhats_trn)] <- NA
+      BLUPs_tst[!is.na(BLUPs_trn)] <- NA
+    
+      SqErr <- (as.vector(BLUPs_tst) - as.vector(yhats_tst))^2
+      RMSE <- sqrt(sum(SqErr, na.rm = T)/sum(is.na(SqErr)))
+    
+      COR <- cor(as.vector(BLUPs_tst), as.vector(yhats_tst), use = "complete.obs")
+
+      ResMat <- rbind(ResMat, 
+                      c(redraw, fold, RMSE, COR, tmpNofacts))
+    }else{
+      ResMat <- rbind(ResMat, 
+                      c(redraw, fold, NA, NA, NA))
+    }
+  }
+  }
+
+colnames(ResMat) <- c("Redraw", "Fold", "RMSE", "COR", "nFacts")
+ResMat <- as.data.frame(ResMat)
+ResMat$ebnm <- ebmns[ebnmNo]
+
+write.table(ResMat, "CV/CV_ebnm_ash_sc.txt", sep = "\t", col.names = T, row.names = F, quote = F)
+```
+
+
+
+
+### Point normal
+
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+factsbf <- readRDS("Greedy_pn/column_sc/factsbf_greedy_sc.rds")#results from backfitting algorithm
+
+#
+factsbf$objective #-583809.9
+factsbf$nfactors #get number of factors: 106
+
+#Get PVE
+summary(factsbf$pve)
+#      Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+# 0.0001651 0.0020956 0.0030307 0.0055998 0.0053967 0.0787117 
+sum(factsbf$pve)*100 #59.3582
+
+R2adj(PVE = sum(factsbf$pve)*100, N = 368, K = 106) #0.4285234
+```
+
+#### CV
+
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+ebnmNo <- 2
+#EBNM approaches: 3 
+ebmns <- c("ebnm_ash", "ebnm_pn", "ebnm_pl") #use to construct filenames for CV runs/folds
+
+fldAssign <- readRDS("CV/scaled/foldInfo.rds")
+BLUPs <- as.matrix(read.delim("../sFAmix/BLUPs.txt", sep = "\t", header = T, row.names = 1))
+
+indxTable <- data.frame(JobNo = 1:90, EBMNno = rep(1:3, each = 30), 
+                        redrawNo = rep(1:10, each = 3), foldNo = rep(1:3, 30))
+
+indxTable <- indxTable[indxTable$EBMNno == ebnmNo ,]
+
+ResMat <- NULL
+
+#define the submatrices that correspond to fold 1,2 or 3
+OCVsets <- list(fold1 = rbind(c(1,2,3),
+                              c(1,2,3)),
+                fold2 = rbind(c(1,2,3),
+                              c(2,3,1)),
+                fold3 = rbind(c(1,2,3),
+                              c(3,1,2))) #first specifies the row index of Y, second row specifies the column index
+
+
+#for each redraw
+for (redraw in 1:10){
+  
+  #for each fold
+  for(fold in 1:3){
+    tmpset <- OCVsets[[fold]]
+    
+    fileName <- paste0(ebmns[ebnmNo], "_factsbf_fold", fold, "_draw", redraw, ".rds")
+    if(file.exists(paste0("CV/scaled/", fileName))){
+      tmpRes <- readRDS(paste0("CV/scaled/", fileName))
+      tmpNofacts <- tmpRes$nfactors #number of factors
+      yhats <- tmpRes$fitted_values #predicted values
+      yhats_trn <- yhats
+      yhats_tst <- yhats
+      BLUPs_trn <- BLUPs
+      BLUPs_tst <- BLUPs
+    
+      #get yhats only for training set
+      yhats_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,1]),
+                which(fldAssign$metFolds[redraw,] == tmpset[2,1])] <- NA #first submatrix
+      yhats_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,2]), 
+                which(fldAssign$metFolds[redraw,] == tmpset[2,2])] <- NA #second submatrix
+      yhats_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,3]), 
+                which(fldAssign$metFolds[redraw,] == tmpset[2,3])] <- NA #third submatrix
+    
+      #BLUPs for training
+      BLUPs_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,1]), 
+                which(fldAssign$metFolds[redraw,] == tmpset[2,1])] <- NA #first submatrix
+      BLUPs_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,2]), 
+                which(fldAssign$metFolds[redraw,] == tmpset[2,2])] <- NA #second submatrix
+      BLUPs_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,3]), 
+                which(fldAssign$metFolds[redraw,] == tmpset[2,3])] <- NA #third submatrix
+    
+      yhats_tst[!is.na(yhats_trn)] <- NA
+      BLUPs_tst[!is.na(BLUPs_trn)] <- NA
+    
+      SqErr <- (as.vector(BLUPs_tst) - as.vector(yhats_tst))^2
+      RMSE <- sqrt(sum(SqErr, na.rm = T)/sum(is.na(SqErr)))
+    
+      COR <- cor(as.vector(BLUPs_tst), as.vector(yhats_tst), use = "complete.obs")
+
+      ResMat <- rbind(ResMat, 
+                      c(redraw, fold, RMSE, COR, tmpNofacts))
+    }else{
+      ResMat <- rbind(ResMat, 
+                      c(redraw, fold, NA, NA, NA))
+    }
+  }
+  }
+
+colnames(ResMat) <- c("Redraw", "Fold", "RMSE", "COR", "nFacts")
+ResMat <- as.data.frame(ResMat)
+ResMat$ebnm <- ebmns[ebnmNo]
+
+write.table(ResMat, "CV/CV_ebnm_pn_sc.txt", sep = "\t", col.names = T, row.names = F, quote = F)
+```
+
+
+### Laplace
+
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+factsbf <- readRDS("Greedy_pl/column_sc/factsbf_greedy_sc.rds")#results from backfitting algorithm
+
+#
+factsbf$objective #-584317.2
+factsbf$nfactors #get number of factors: 100; Kmax was set to 500.
+
+#Get PVE
+summary(factsbf$pve)
+#      Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+# 0.0003622 0.0020831 0.0033297 0.0058829 0.0056589 0.0780965 
+sum(factsbf$pve)*100 #58.82945
+
+R2adj(PVE = sum(factsbf$pve)*100, N = 368, K = 100) #0.4340976
+```
+
+Exploring the data.
+```{r, echo = T, eval = F}
+sum(factsbf$pve) #0.3874258
+
+# generate a scree plot to make this more accessable/digestable
+pdf("Greedy_pl/column_sc/scree_columnBF.pdf", h = 3, w = 5, useDingbats = F, pointsize = 10)
+par(mar=c(4,3.5,1.5,1.5), mgp=c(1.8,0.5,0))
+plot(1:100, factsbf$pve, type = "b", xlab = "Factor Number", ylab = "% var. expl.", pch = 19, cex = 0.75, col = "grey50")
+dev.off()
+```
+
+Rank factors, get top 10, and explore/plot loadings for top mets
+```{r, echo = T, eval = F}
+library(ggplot2)
+library(cowplot)
+
+PVE <- factsbf$pve
+lds <- factsbf$ldf$f #loadings met x k
+colnames(lds) <- 1:100
+
+Annot.GC <- read.csv("../../../TrevorOats/20190823_MS_signal_processing/results/GCMS_2018_GC.03_annotation.csv")[c(1,3,4,9:14)]
+Annot.LC <- read.csv("../../../TrevorOats/20190823_MS_signal_processing/results/LCMS_2018_LC.03_annotation.csv")[c(1,3,4,16:21)]
+Annot <- rbind(Annot.GC, Annot.LC)
+rm(Annot.LC, Annot.GC)
+
+exploreTopLds <- function(pve = NULL, lds = NULL, nFacts = NULL, nCmpds = NULL, ldThrsh = NULL){
+  
+  tmpLds <- lds[, order(pve, decreasing = T)[1:nFacts] ] #get only the loadings for the top factors
+  topList <- list()
+  for(i in 1:nFacts){ 
+    #loop through columns of loadings, order by absolute value, 
+    #and extract top nCmpds
+    if(is.null(ldThrsh)){
+      topList[[paste0("factor_", i)]] <- tmpLds[order(abs(tmpLds[,i]), 
+                                                      decreasing = T),][,i][1:nCmpds]
+    }else{
+      topList[[paste0("factor_", i)]] <- tmpLds[abs(tmpLds[,i]) >= ldThrsh ,][,i][1:nCmpds]
+    }
+  }
+  return(topList)
+}
+
+getAnnots <- function(annots = NULL, cmpds = NULL, annType = NULL, idCol = NULL){
+  #extracts a set of annotations based on annType for a set of compounds; annType determines the type of annotation and should match the appropriate column in annots
+  cmpds <- data.frame(cmpds)
+  tmpAnnot <- annots[c(idCol, annType)]
+  colnames(tmpAnnot) <- c("x", "ann")
+  tmpAnnot <- merge(tmpAnnot, cmpds, by.x = "x", by.y = 0, all.x = F, all.y = T)
+  colnames(tmpAnnot) <- c("cmpd", "annot", "lds")
+  tmpAnnot <- tmpAnnot[order(abs(tmpAnnot$lds), decreasing = T) ,]
+  return(tmpAnnot)
+}
+
+
+
+#debugonce(exploreTopLds)
+
+topFacts <- exploreTopLds(pve = PVE, lds = lds, nFacts = 100, nCmpds = 100, ldThrsh = NULL)
+
+topAnnots <- lapply(topFacts, getAnnots, annot = Annot, annType = "parent", idCol = "cmpd")
+
+pdf("Greedy_pl/column_sc/Lds.pdf", width = 5, height = 5, useDingbats = F)
+par(mar=c(12, 3.5, 1.5, 1)) #bottom, left, top, and right margins respecively default c(5, 4, 4, 2)
+par(mgp=c(2.25,1,0))
+
+for(i in 1:100){
+  tmpData <- topAnnots[[i]]
+  tmpData <- na.omit(tmpData)
+  tmpData$label <- paste0(tmpData$annot, " (", tmpData$cmpd, ")")
+  
+  mp = barplot(tmpData$lds, space = 0.8, ylab = "Fact. Ldg.", cex.axis = 0.5, main = paste0("Factor ", i, "(PVE: ", round(PVE[i]*100, 2), ")"))
+  axis(1, at = mp[,1], labels = tmpData$label, cex.axis = 0.5, las = 2, padj = 0.5, adj = 1)
+  # text(x = mp[,1], y = 0 - max(tmpData$lds)*0.15, labels = tmpData$annot, 
+  #      las = 2, xpd = TRUE, srt = 90, cex = 0.25, adj = 1)
+}
+dev.off()
+
+##For lab meeting
+topFacts <- exploreTopLds(pve = PVE, lds = lds, nFacts = 100, nCmpds = nrow(lds), ldThrsh = NULL)
+
+topAnnots <- lapply(topFacts, getAnnots, annot = Annot, annType = "parent", idCol = "cmpd")
+
+tmpData <- topAnnots[[1]]
+#tmpData <- na.omit(tmpData)
+#tmpData$label <- paste0(tmpData$annot, " (", tmpData$cmpd, ")")
+
+tmp.bp1 <- ggplot(tmpData, aes(x = 1:nrow(tmpData), y = abs(lds))) +
+           geom_point(size = 0.2) +
+           xlab("cmpd index") +
+           ylab("abs(ldg.)") +
+           scale_y_continuous(limits = c(0, 0.35)) +
+           ggtitle(paste0("Factor 1 (PVE: ", round(PVE[1]*100, 2), "%)")) +
+           theme_bw() +
+           theme(plot.title = element_text(hjust = 0.5, size = 9, face = "bold")) +
+           theme(axis.title.y = element_text(size = 8, angle = 90, face = "bold")) + 
+           theme(axis.title.x = element_text(size = 8, angle = 00, face = "bold")) +
+           theme(axis.text.x = element_text(size = 3, angle = 00, vjust = 0.5, hjust = 0.5)) +     
+           theme(axis.text.y = element_text(size = 3, angle = 00))
+
+tmpData <- topAnnots[[25]]
+#tmpData <- na.omit(tmpData)
+#tmpData$label <- paste0(tmpData$annot, " (", tmpData$cmpd, ")")
+
+tmp.bp2 <- ggplot(tmpData, aes(x = 1:nrow(tmpData), y = abs(lds))) +
+           geom_point(size = 0.2) +
+           xlab("cmpd index") +
+           ylab("abs(ldg.)") +
+           scale_y_continuous(limits = c(0, 0.35)) +
+           ggtitle(paste0("Factor 25 (PVE: ", round(PVE[25]*100, 2), "%)")) +
+           theme_bw() +
+           theme(plot.title = element_text(hjust = 0.5, size = 9, face = "bold")) +
+           theme(axis.title.y = element_text(size = 8, angle = 90, face = "bold")) + 
+           theme(axis.title.x = element_text(size = 8, angle = 00, face = "bold")) +
+           theme(axis.text.x = element_text(size = 3, angle = 00, vjust = 0.5, hjust = 0.5)) +     
+           theme(axis.text.y = element_text(size = 3, angle = 00))
+
+pdf("~/Downloads/DenseSp.pdf", h = 2.7, w = 5)
+  plot_grid(tmp.bp1, tmp.bp2, ncol = 2, nrow = 1)
+dev.off()
+```
+
+Do metabolites of the same class or subclass have loadings significantly higher than 0?
+```{r, echo = T, eval = F}
+enrichList <- list()
+
+topFacts <- exploreTopLds(pve = PVE, lds = lds, nFacts = 100, nCmpds = nrow(lds), ldThrsh = NULL)
+topAnnots <- lapply(topFacts, getAnnots, annot = Annot, annType = "subclass", idCol = "cmpd")
+
+testLds <- function(topAnnotsDF = NULL, lvlCol = NULL, valCol = NULL, minNo = NULL){
+  require(plyr)
+  tmpData <- topAnnotsDF[c(lvlCol, valCol)]
+  colnames(tmpData) <- c("levs", "vals")
+  allLevs <- unique(tmpData$levs)
+  P <- NULL
+  Tstat <- NULL
+  for(i in 1:length(allLevs)){
+    tmp.tmp <- tmpData[tmpData$levs %in% allLevs[i] ,]
+    
+    if(nrow(tmp.tmp) >= minNo){
+      P <- c(P, 
+             t.test(x = abs(tmp.tmp$vals), 
+                    mu = 0, 
+                    alternative = "greater")$p.value)
+      Tstat <- c(Tstat, 
+                 t.test(x = abs(tmp.tmp$vals), 
+                        mu = 0, 
+                        alternative = "greater")$statistic)
+    }else{
+      P <- c(P, NA)
+      Tstat <- c(Tstat, NA)
+    }
+  }
+  return(data.frame(Annot = allLevs, Tstat = Tstat, Pval = P))
+}
+
+
+#debugonce(testLds)
+allRes <- lapply(topAnnots, function(x){
+                 testLds(topAnnotsDF = x, lvlCol = "annot", valCol = "lds", minNo = 5)
+                 })
+
+allRes <- ldply(allRes)
+allRes <- allRes[is.na(allRes$Pval) != 1 ,]
+allRes <- allRes[is.na(allRes$Annot) != 1 ,]
+allRes$adjPval <- p.adjust(p = allRes$Pval, method = "BH")
+
+enrichList$t.test <- allRes
+
+saveRDS(enrichList,
+        "Greedy_pl/column_sc/enrichment/Enrich_subclass.rds")
+```
+
+```{r, echo = T, eval = F}
+library(fgsea)
+
+rm(list = ls())
+
+###############
+## Functions ##
+###############
+
+#need a list with each element being a annotation class and in each element the metabolites belonging to the list
+#need a vector of ranks where the name of each element matches that provided in the annotation list
+
+getMets4Annots <- function(annots = NULL, annType = NULL, idCol = NULL){
+  #extracts all metabolites in user's data that belong to a specific annotation.
+  #returns a list with each element being a specific annotation
+  Res <- list()
+  tmpdf <- annots[c(idCol, annType)]
+  colnames(tmpdf) <- c("id", "ann")
+  cats <- unique(tmpdf$ann)
+  for (i in 1:length(cats)){
+    if(is.na(cats[i]) != 1){
+      Res[[as.character(cats[i])]] <- tmpdf[tmpdf$ann %in% cats[i] ,]$id
+      }
+    }
+  return(Res)
+}
+
+rankTopLds <- function(pve = NULL, lds = NULL, nFacts = NULL, nCmpds = NULL){
+  
+  tmpLds <- lds[, order(pve, decreasing = T)[1:nFacts] ] #get only the loadings for the top factors
+  topList <- list()
+  for(i in 1:nFacts){ 
+    #loop through columns of loadings, order by absolute value, 
+    #and extract top nCmpds
+    if(!is.null(nCmpds)){
+      topList[[paste0("factor_", colnames(tmpLds)[i])]] <- abs(tmpLds[order(abs(tmpLds[,i]),
+                                                                            decreasing = T),][,i][1:nCmpds])
+    }else{
+      topList[[paste0("factor_", colnames(tmpLds)[i])]] <- abs(tmpLds[order(abs(tmpLds[,i]), 
+                                                                            decreasing = T),][,i])
+    }
+  }
+  return(topList)
+  }
+
+##############
+## Analysis ##
+##############
+
+enrichList <- readRDS("Greedy_pl/column_sc/enrichment/Enrich_subclass.rds") #will add slot for GSEA
+
+factsbf <- readRDS("Greedy_pl/column_sc/factsbf_greedy_sc.rds") #results from backfitting algorithm
+
+PVE <- factsbf$pve
+lds <- factsbf$ldf$f #loadings met x k
+colnames(lds) <- 1:ncol(lds)
+
+Annot.GC <- read.csv("../../../TrevorOats/20190823_MS_signal_processing/results/GCMS_2018_GC.03_annotation.csv")[c(1,3,4,9:14)]
+Annot.LC <- read.csv("../../../TrevorOats/20190823_MS_signal_processing/results/LCMS_2018_LC.03_annotation.csv")[c(1,3,4,16:21)]
+Annot <- rbind(Annot.GC, Annot.LC)
+rm(Annot.LC, Annot.GC)
+
+nonNAcmpds <- Annot[is.na(Annot$class) != 1 ,]$cmpd
+lds.nonNA <- lds[row.names(lds) %in% nonNAcmpds ,]
+
+Pathways <- getMets4Annots(annots = Annot, annType = "subclass", idCol = "cmpd")
+
+metLdgList <- rankTopLds(pve = PVE, lds = lds.nonNA, nFacts = 100, nCmpds = NULL)
+
+
+GSEAlist <- lapply(metLdgList, function(x) fgsea(pathways = Pathways, stats = x, nperm = 100000, minSize = 5, gseaParam = 1))
+
+enrichList$GSEA <- GSEAlist
+
+saveRDS(enrichList,
+        "Greedy_pl/column_sc/enrichment/Enrich_subclass.rds")
+```
+
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+enrichList <- readRDS("Greedy_pl/column_sc/enrichment/Enrich_subclass.rds")
+
+t.testRes <- enrichList$t.test
+gseaRes <- enrichList$GSEA
+
+gseaRes[[1]][order(gseaRes[[1]]$padj) ,]
+gseaRes[[7]][order(gseaRes[[7]]$padj) ,]
+```
+
+#### CV
+
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+ebnmNo <- 3
+#EBNM approaches: 3 
+ebmns <- c("ebnm_ash", "ebnm_pn", "ebnm_pl") #use to construct filenames for CV runs/folds
+
+fldAssign <- readRDS("CV/scaled/foldInfo.rds")
+BLUPs <- as.matrix(read.delim("../sFAmix/BLUPs.txt", sep = "\t", header = T, row.names = 1))
+
+indxTable <- data.frame(JobNo = 1:90, EBMNno = rep(1:3, each = 30), 
+                        redrawNo = rep(1:10, each = 3), foldNo = rep(1:3, 30))
+
+indxTable <- indxTable[indxTable$EBMNno == ebnmNo ,]
+
+ResMat <- NULL
+
+#define the submatrices that correspond to fold 1,2 or 3
+OCVsets <- list(fold1 = rbind(c(1,2,3),
+                              c(1,2,3)),
+                fold2 = rbind(c(1,2,3),
+                              c(2,3,1)),
+                fold3 = rbind(c(1,2,3),
+                              c(3,1,2))) #first specifies the row index of Y, second row specifies the column index
+
+
+#for each redraw
+for (redraw in 1:10){
+  
+  #for each fold
+  for(fold in 1:3){
+    tmpset <- OCVsets[[fold]]
+    
+    fileName <- paste0(ebmns[ebnmNo], "_factsbf_fold", fold, "_draw", redraw, ".rds")
+    if(file.exists(paste0("CV/scaled/", fileName))){
+      tmpRes <- readRDS(paste0("CV/scaled/", fileName))
+      tmpNofacts <- tmpRes$nfactors #number of factors
+      yhats <- tmpRes$fitted_values #predicted values
+      yhats_trn <- yhats
+      yhats_tst <- yhats
+      BLUPs_trn <- BLUPs
+      BLUPs_tst <- BLUPs
+    
+      #get yhats only for training set
+      yhats_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,1]),
+                which(fldAssign$metFolds[redraw,] == tmpset[2,1])] <- NA #first submatrix
+      yhats_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,2]), 
+                which(fldAssign$metFolds[redraw,] == tmpset[2,2])] <- NA #second submatrix
+      yhats_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,3]), 
+                which(fldAssign$metFolds[redraw,] == tmpset[2,3])] <- NA #third submatrix
+    
+      #BLUPs for training
+      BLUPs_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,1]), 
+                which(fldAssign$metFolds[redraw,] == tmpset[2,1])] <- NA #first submatrix
+      BLUPs_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,2]), 
+                which(fldAssign$metFolds[redraw,] == tmpset[2,2])] <- NA #second submatrix
+      BLUPs_trn[which(fldAssign$indFolds[redraw,] == tmpset[1,3]), 
+                which(fldAssign$metFolds[redraw,] == tmpset[2,3])] <- NA #third submatrix
+    
+      yhats_tst[!is.na(yhats_trn)] <- NA
+      BLUPs_tst[!is.na(BLUPs_trn)] <- NA
+    
+      SqErr <- (as.vector(BLUPs_tst) - as.vector(yhats_tst))^2
+      RMSE <- sqrt(sum(SqErr, na.rm = T)/sum(is.na(SqErr)))
+    
+      COR <- cor(as.vector(BLUPs_tst), as.vector(yhats_tst), use = "complete.obs")
+
+      ResMat <- rbind(ResMat, 
+                      c(redraw, fold, RMSE, COR, tmpNofacts))
+    }else{
+      ResMat <- rbind(ResMat, 
+                      c(redraw, fold, NA, NA, NA))
+    }
+  }
+  }
+
+colnames(ResMat) <- c("Redraw", "Fold", "RMSE", "COR", "nFacts")
+ResMat <- as.data.frame(ResMat)
+ResMat$ebnm <- ebmns[ebnmNo]
+
+write.table(ResMat, "CV/CV_ebnm_pl_sc.txt", sep = "\t", col.names = T, row.names = F, quote = F)
+```
+
+
+### Summarise CV results
+
+```{r, echo = T, eval = F}
+library(plyr)
+library(cowplot)
+
+rm(list = ls())
+
+CVs <- rbind(read.delim("CV/CV_ebnm_ash_sc.txt", header = T, sep = "\t"),
+             read.delim("CV/CV_ebnm_pl_sc.txt", header = T, sep = "\t"),
+             read.delim("CV/CV_ebnm_pn_sc.txt", header = T, sep = "\t"))
+
+CVs <- ddply(CVs, .(Redraw, ebnm), summarise, RMSE = mean(RMSE), COR = mean(COR), nFacts = mean(nFacts))
+
+ddply(CVs, .(ebnm), summarise, RMSE = mean(RMSE, na.rm = T),
+      COR = mean(COR, na.rm = T), nFacts = mean(nFacts, na.rm = T))
+
+#       ebnm      RMSE       COR   nFacts
+# 1 ebnm_ash 1.4508357 0.3222480 64.74074
+# 2  ebnm_pl 0.9703060 0.5195253 60.06667
+# 3  ebnm_pn 0.9778202 0.5136802 62.73333
+
+RMSEplot <- ggplot(CVs, aes(x = ebnm, y = RMSE, fill = ebnm)) +
+            geom_boxplot(outlier.colour = "black", outlier.shape = 19,
+                outlier.size = 0.25, size = 0.25) +
+            xlab("EBNM appr.") +
+            ylab("RMSE") +
+            scale_fill_manual(values = c(wes_palette("Royal2")[3:5])) +
+            theme_bw() +
+            scale_x_discrete(labels = c("ASh", "Lp", "PN")) +
+            theme(legend.position = "none") +
+            theme(plot.background = element_blank(),
+                  panel.grid.major = element_blank(),
+                  panel.grid.minor = element_blank()) +
+            theme(axis.title.y = element_text(size = 8, 
+                                              angle = 90,face="bold")) + 
+            theme(axis.title.x = element_text(size = 8, 
+                                              angle = 00,face="bold")) +
+            theme(axis.text.x = element_text(size = 6, 
+                                             angle = 00, vjust = 0.5, 
+                                             hjust = 0.5)) +
+            theme(axis.text.y = element_text(size = 6, 
+                                             angle = 00)) +
+            theme(axis.ticks = element_line(size = 0.25)) + 
+            theme(plot.margin=unit(c(0.15,0.1,0.1,0.1),"in"))
+
+Rplot <- ggplot(CVs, aes(x = ebnm, y = COR, fill = ebnm)) +
+            geom_boxplot(outlier.colour = "black", outlier.shape = 19,
+                outlier.size = 0.25, size = 0.25) +
+            xlab("EBNM appr.") +
+            ylab("r") +
+            scale_fill_manual(values = c(wes_palette("Royal2")[3:5])) +
+            scale_x_discrete(labels = c("ASh", "Lp", "PN")) +
+            theme_bw() +
+            theme(legend.position = "none") +
+            theme(plot.background = element_blank(),
+                  panel.grid.major = element_blank(),
+                  panel.grid.minor = element_blank()) +
+            theme(axis.title.y = element_text(size = 8, 
+                                              angle = 90,face="bold")) + 
+            theme(axis.title.x = element_text(size = 8, 
+                                              angle = 00,face="bold")) +
+            theme(axis.text.x = element_text(size = 6, 
+                                             angle = 00, vjust = 0.5, 
+                                             hjust = 0.5)) +
+            theme(axis.text.y = element_text(size = 6, 
+                                             angle = 00)) +
+            theme(axis.ticks = element_line(size = 0.25)) + 
+            theme(plot.margin=unit(c(0.15,0.1,0.1,0.1),"in"))
+
+Factplot <- ggplot(CVs, aes(x = ebnm, y = nFacts, fill = ebnm)) +
+            geom_boxplot(outlier.colour = "black", outlier.shape = 19,
+                outlier.size = 0.25, size = 0.25) +
+            xlab("EBNM appr.") +
+            ylab("r") +
+            scale_fill_manual(values = c(wes_palette("Royal2")[3:5])) +
+            scale_x_discrete(labels = c("ASh", "Lp", "PN")) +
+            theme_bw() +
+            theme(legend.position = "none") +
+            theme(plot.background = element_blank(),
+                  panel.grid.major = element_blank(),
+                  panel.grid.minor = element_blank()) +
+            theme(axis.title.y = element_text(size = 8, 
+                                              angle = 90,face="bold")) + 
+            theme(axis.title.x = element_text(size = 8, 
+                                              angle = 00,face="bold")) +
+            theme(axis.text.x = element_text(size = 6, 
+                                             angle = 00, vjust = 0.5, 
+                                             hjust = 0.5)) +
+            theme(axis.text.y = element_text(size = 6, 
+                                             angle = 00)) +
+            theme(axis.ticks = element_line(size = 0.25)) + 
+            theme(plot.margin=unit(c(0.15,0.1,0.1,0.1),"in"))
+
+pdf("CV/CVres_sc.pdf", h = 2.7, w = 3.2)
+  plot_grid(RMSEplot, Rplot, ncol = 2, nrow = 1,
+            labels = "AUTO", label_size = 8, 
+            hjust = -0.5, vjust = 1.2)
+dev.off()
+```
+
+
+#### Explore the data
+
+```{r, echo=T, eval=F}
+library(pheatmap)
+library(viridis)
+
+rm(list = ls())
+
+factsbf <- readRDS("scaled/Greedy_pl/factsbf_greedy_sc.rds")#results from backfitting algorithm
+
+PVE <- factsbf$pve
+lds <- factsbf$ldf$f #loadings met x k
+
+colnames(lds) <- paste0("Fact_", 1:ncol(lds))
+
+pdf("~/Downloads/foo.pdf")
+for (i in 1:ncol(lds)){
+  plot(abs(lds[,i])[order(abs(lds[,i]), decreasing = T)], 
+       type = "l", ylab = "abs(lds)", 
+       main = colnames(lds)[i], ylim = c(min(abs(lds)), max(abs(lds))))
+}
+dev.off()
+
+```
+
+
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+factsbf <- readRDS("scaled/Greedy_pl/factsbf_greedy_sc.rds")#results from backfitting algorithm
+
+PVE <- factsbf$pve
+lds <- factsbf$ldf$f #loadings met x k
+
+pdf("Greedy_pl/column_sc/ldsHist.pdf", h = 4, w = 6)
+for(i in 1:ncol(lds)){
+  hist(abs(lds[,i]), xlim = c(0,0.65), main = paste0("Fac ", i))
+}
+dev.off()
+
+Annot.GC <- read.csv("../../../TrevorOats/20190823_MS_signal_processing/results/GCMS_2018_GC.03_annotation.csv")[c(1,3,4,9:14)]
+Annot.LC <- read.csv("../../../TrevorOats/20190823_MS_signal_processing/results/LCMS_2018_LC.03_annotation.csv")[c(1,3,4,16:21)]
+Annot <- rbind(Annot.GC, Annot.LC)
+rm(Annot.LC, Annot.GC)
+
+colnames(lds) <- paste0("Fact", 1:ncol(lds))
+
+exploreTopLds <- function(pve = NULL, lds = NULL, nFacts = NULL, nCmpds = NULL, ldThrsh = NULL){
+  
+  tmpLds <- lds[, order(pve, decreasing = T)[1:nFacts] ] #get only the loadings for the top factors
+  topList <- list()
+  for(i in 1:nFacts){ 
+    #loop through columns of loadings, order by absolute value, 
+    #and extract top nCmpds
+    if(!is.null(nCmpds)){
+      topList[[colnames(lds)[i]]] <- tmpLds[order(abs(tmpLds[,i]), 
+                                                      decreasing = T),][,i][1:nCmpds]
+    }else{
+      topList[[colnames(lds)[i]]] <- tmpLds[abs(tmpLds[,i]) >= ldThrsh ,][,i][1:nCmpds]
+    }
+  }
+  return(topList)
+}
+
+getAnnots <- function(annots = NULL, cmpds = NULL, annType = NULL, idCol = NULL){
+  #extracts a set of annotations based on annType for a set of compounds; annType determines the type of annotation and should match the appropriate column in annots
+  cmpds <- data.frame(cmpds)
+  tmpAnnot <- annots[c(idCol, annType)]
+  colnames(tmpAnnot) <- c("x", "ann")
+  tmpAnnot <- merge(tmpAnnot, cmpds, by.x = "x", by.y = 0, all.x = F, all.y = T)
+  colnames(tmpAnnot) <- c("cmpd", "annot", "lds")
+  tmpAnnot <- tmpAnnot[order(abs(tmpAnnot$lds), decreasing = T) ,]
+  return(tmpAnnot)
+}
+
+#debugonce(exploreTopLds)
+
+#topFacts <- exploreTopLds(pve = PVE, lds = lds, nFacts = 100, nCmpds = nrow(lds), ldThrsh = NULL)
+
+topFacts <- exploreTopLds(pve = PVE, lds = lds, nFacts = 100, nCmpds = 100, ldThrsh = NULL)
+
+#debugonce(getAnnots)
+topAnnots <- lapply(topFacts, getAnnots, annot = Annot, annType = "parent", idCol = "cmpd")
+
+
+pdf("Greedy_pl/column_sc/Lds.pdf", width = 5, height = 5, useDingbats = F)
+par(mar=c(12, 3.5, 1.5, 1)) #bottom, left, top, and right margins respecively default c(5, 4, 4, 2)
+par(mgp=c(2.25,1,0))
+
+for(i in 1:100){
+  tmpData <- topAnnots[[i]]
+  tmpData <- na.omit(tmpData)
+  tmpData$label <- paste0(tmpData$annot, " (", tmpData$cmpd, ")")
+  
+  mp = barplot(tmpData$lds, space = 0.8, ylab = "Fact. Ldg.", cex.axis = 0.5, main = paste0(names(topAnnots)[i], " (PVE: ", round(PVE[i]*100, 2), ")"), horiz=F)
+  axis(1, at = mp[,1], labels = tmpData$label, cex.axis = 0.5, las = 2, padj = 0.5, adj = 1)
+  # text(x = mp[,1], y = 0 - max(tmpData$lds)*0.15, labels = tmpData$annot, 
+  #      las = 2, xpd = TRUE, srt = 90, cex = 0.25, adj = 1)
+}
+dev.off()
+```

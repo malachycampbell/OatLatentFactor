@@ -1,0 +1,1325 @@
+---
+title: "Diversity panel metabolite data (Ithaca) - Data cleaning and model selection"
+author: "Malachy Campbell"
+date: "10/17/2019"
+output: pdf_document
+header-includes:
+- \usepackage{caption}
+- \usepackage{rotating}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Transformation of the data
+
+## Preprocessing phenotypic data (GC/LC)
+These are 2018 datasets anchored/aligned to 2018. These are already adjusted for batch effects.
+```{r, echo = T, eval = F}
+setwd("~/Documents/Dropbox/Work/Oats/DivPanel_Met_HH/statTargetQC/qcrfsc/")
+
+rm(list = ls())
+
+#GC and LC data for diversity panel
+GC <- read.csv("QCRFSC_GCMS_2018_GC.03metadata_and_abundance_experimental.csv")
+LC <- read.csv("QCRFSC_LCMS_2018_LC.03metadata_and_abundance_experimental.csv")
+```
+
+### Visualize field layout
+The experiment is a type-II modified augmented design(?). All accessions have single replicate; 18 blocks total with 23 lines in each. CORRAL is the primary check included in each block and there are six secondary checks, each of which are present in four blocks. Blocks are along rows with two blocks per row.
+
+```{r, echo = T, eval = F}
+library(desplot)
+
+fldLayout <- GC[c(6:11)]
+
+lineCnts <- table(fldLayout$line) #which lines are checks 
+priChk <- names(lineCnts[lineCnts == 19])
+secChk <- names(lineCnts[lineCnts == 4])
+
+fldLayout$check <- 0
+fldLayout$check[fldLayout$line %in% priChk] <- 1
+fldLayout$check[fldLayout$line %in% secChk] <- 2
+
+pdf("fldLayout.pdf", h = 6, w = 6)
+desplot(form = block ~ column + row, data = fldLayout, 
+        out1 = block, out2 = plot, text = GID, col = check,
+        col.regions = "grey90", cex = 0.25, show.key = F)
+dev.off()
+```
+
+
+\begin{figure}
+\centering
+\includegraphics[width=4.5in]{fldLayout.pdf}
+\captionsetup{width=4.5in}
+\caption{\textbf{Field layout for 2018 metabolomics data for the diversity panel}. Small, portrait-style rectangles are the plots, and large landscape-style rectangles are the blocks. The text in the center of each plot id the GID, with non-black text indicating a check. Scale on right is meaningless.}
+\label{FldDP}
+\end{figure}
+
+### Check distributions for each metabolite - GC
+```{r, echo = T, eval = F}
+library(latex2exp)
+library(nsRFA)
+rm(list = ls())
+
+GC <- read.csv("QCRFSC_GCMS_2018_GC.03metadata_and_abundance_experimental.csv")
+
+colIndx <- grep("GC.", colnames(GC)) #793 GC metabolites
+
+#are there any zero values? - NONE
+summary(apply(GC[,colIndx], 2, function(x){sum(x == 0)/length(x)}))
+
+#get L-skewness and L-kurtosis on raw data
+rawLS.GC <- apply(GC[,colIndx], 2, LCA) #skewness; most are right tailed
+rawLK.GC <- apply(GC[,colIndx], 2, Lkur) #kurtosis
+
+
+# try log2 for GC and cube root
+GC.l2 <- cbind(GC[,-colIndx], log(GC[,colIndx], 2))
+GC.cr <- cbind(GC[,-colIndx], GC[,colIndx]^(1/3))
+
+#get L-skewness and L-kurtosis on tranformed data
+l2LS.GC <- apply(GC.l2[,colIndx], 2, LCA) #skewness; most are right tailed
+l2LK.GC <- apply(GC.l2[,colIndx], 2, Lkur) #kurtosis
+
+crLS.GC <- apply(GC.cr[,colIndx], 2, LCA) #skewness; most are right tailed
+crLK.GC <- apply(GC.cr[,colIndx], 2, Lkur) #kurtosis
+
+ht = 3
+
+#plot before and after for skewness and kurtosis
+pdf("GC_moments_before.afterTransf.pdf", h = ht*3, w = ht*(16/9), useDingbats = F, pointsize = 10)
+par(mar=c(4,3.5,1.5,1.5), mgp=c(1.8,0.5,0))
+nf = layout(rbind(c(1,2), c(3,4), c(5,6)))
+
+#before
+hist(rawLS.GC, main = "L-Skewness", xlab = "raw value", breaks = 50)
+hist(rawLK.GC, main = "L-Kurtosis", xlab = "raw value", breaks = 50)
+#after-log2
+hist(l2LS.GC, main = "L-Skewness", xlab = TeX("$log_{2}(value)$"), breaks = 50)
+hist(l2LK.GC, main = "L-Kurtosis", xlab = TeX("$log_{2}(value)$"), breaks = 50)
+
+#after-cube root
+hist(crLS.GC, main = "L-Skewness", xlab = TeX("$x^{\\frac{1}{3}}$"), breaks = 50)
+hist(crLK.GC, main = "L-Kurtosis", xlab = TeX("$x^{\\frac{1}{3}}$"), breaks = 50)
+
+dev.off()
+###########
+
+#Histograms for each trait
+ht <- 3.1
+
+pdf("../GC.hist.pdf", h = ht, w = ht*(16/9), useDingbats = F, pointsize = 10)
+for(i in 1:length(colIndx)){
+par(mar=c(4,3.5,1.5,1.5), mgp=c(1.8,0.5,0))
+nf = layout(rbind(c(1,2,3), c(1,2,3)))
+  tmp <- GC[c(7,8,9,10,11, colIndx[i])]
+  hist(GC[,colIndx[i]], main = colnames(GC)[colIndx[i]], xlab = "raw value", breaks = 25)
+  hist(log(GC[,colIndx[i]], 2), main = colnames(GC)[colIndx[i]], xlab = TeX("$log_{2}(value)$"), breaks = 25)
+   hist(GC[,colIndx[i]]^(1/3), main = colnames(GC)[colIndx[i]], xlab = TeX("$value^\\frac{1}{3}$"), breaks = 25)
+}
+dev.off()
+
+#Apply cube root on all GC
+```
+Cube root looks like it does a decent job.
+
+\begin{figure}
+\includegraphics[width=4.5in]{GC_moments_before.afterTransf.pdf}
+\captionsetup{width=4.5in}
+\caption{\textbf{Before and after applying transformations wit GC data.} The first row is the raw data, second is after log2, and last is with cube root. First column is L-skew and second is L-kurtosis.}
+\label{FigTrans}
+\end{figure}
+
+### Check distributions for each metabolite - LC
+```{r, echo = T, eval = F}
+library(latex2exp)
+rm(list = ls())
+
+LC <- read.csv("QCRFSC_LCMS_2018_LC.03metadata_and_abundance_experimental.csv")
+
+colIndx <- grep("LC.", colnames(LC)) #1233 LC metabolites
+
+#are there any zero values? - NONE
+summary(apply(LC[,colIndx], 2, function(x){sum(x == 0)/length(x)}))
+
+#get L-skewness and L-kurtosis on raw data
+rawLS.LC <- apply(LC[,colIndx], 2, LCA) #skewness; most are right tailed
+rawLK.LC <- apply(LC[,colIndx], 2, Lkur) #kurtosis
+
+
+# try log2 for LC and cube root
+LC.l2 <- cbind(LC[,-colIndx], log(LC[,colIndx], 2))
+LC.cr <- cbind(LC[,-colIndx], LC[,colIndx]^(1/3))
+
+#get L-skewness and L-kurtosis on tranformed data
+l2LS.LC <- apply(LC.l2[,colIndx], 2, LCA) #skewness; most are right tailed
+l2LK.LC <- apply(LC.l2[,colIndx], 2, Lkur) #kurtosis
+
+crLS.LC <- apply(LC.cr[,colIndx], 2, LCA) #skewness; most are right tailed
+crLK.LC <- apply(LC.cr[,colIndx], 2, Lkur) #kurtosis
+
+ht <- 3.1
+
+#plot before and after for skewness and kurtosis
+pdf("../LC_moments_before.afterTransf.pdf", h = ht*3, w = ht*(16/9), useDingbats = F, pointsize = 10)
+par(mar=c(4,3.5,1.5,1.5), mgp=c(1.8,0.5,0))
+nf = layout(rbind(c(1,2), c(3,4), c(5,6)))
+
+#before
+hist(rawLS.LC, main = "L-Skewness", xlab = "raw value", breaks = 50)
+hist(rawLK.LC, main = "L-Kurtosis", xlab = "raw value", breaks = 50)
+#after-log2
+hist(l2LS.LC, main = "L-Skewness", xlab = TeX("$log_{2}(value)$"), breaks = 50)
+hist(l2LK.LC, main = "L-Kurtosis", xlab = TeX("$log_{2}(value)$"), breaks = 50)
+
+#after-cube root
+hist(crLS.LC, main = "L-Skewness", xlab = TeX("$x^{\\frac{1}{3}}$"), breaks = 50)
+hist(crLK.LC, main = "L-Kurtosis", xlab = TeX("$x^{\\frac{1}{3}}$"), breaks = 50)
+
+dev.off()
+###########
+
+#Histograms for each trait
+ht <- 3.1
+
+pdf("LC.hist.pdf", h = ht, w = ht*(16/9), useDingbats = F, pointsize = 10)
+for(i in 1:length(colIndx)){
+par(mar=c(4,3.5,1.5,1.5), mgp=c(1.8,0.5,0))
+nf = layout(rbind(c(1,2,3), c(1,2,3)))
+  tmp <- LC[c(7,8,9,10,11, colIndx[i])]
+  hist(LC[,colIndx[i]], main = colnames(LC)[colIndx[i]], xlab = "raw value", breaks = 25)
+  hist(log(LC[,colIndx[i]], 2), main = colnames(LC)[colIndx[i]], xlab = TeX("$log_{2}(value)$"), breaks = 25)
+   hist(LC[,colIndx[i]]^(1/3), main = colnames(LC)[colIndx[i]], xlab = TeX("$value^\\frac{1}{3}$"), breaks = 25)
+}
+dev.off()
+
+
+#Apply cube root transformation on all LC
+```
+
+\begin{figure}
+\includegraphics[width=4.5in]{LC_moments_before.afterTransf.pdf}
+\captionsetup{width=4.5in}
+\caption{\textbf{Before and after applying transformations with LC data}. The first row is the raw data, second is after log2, and last is with cube root. First column is L-skew and second is L-kurtosis.}
+\label{FigTrans}
+\end{figure}
+
+Apply cube root transformation on all LC and GC.
+
+# Best model to calculate BLUPs
+For each metabolite fit a 'base' model where check is a fixed effect, entry is random and block is random. The model is given by 
+$$ y = check + new:entry + block + batch + e $$
+
+## Preprocessing
+First I create two new columns that indicate whether a line is a check or an entry (unreplicated). These are indicated by $check$ and $new$ respectively. The check column consists of c + 1 levels where c is the number of check lines and new consists of two levels binary indicator of whether line is unreplicated entry or check. 
+
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+#Place to store all metabolite data from each stage
+FinalData <- list()
+
+GC <- read.csv("QCRFSC_GCMS_2018_GC.03metadata_and_abundance_experimental.csv")
+LC <- read.csv("QCRFSC_LCMS_2018_LC.03metadata_and_abundance_experimental.csv")
+FT <- read.table("../../DP_Ith_phenoData/RNAseq18_Headingdate.txt", sep = "", header = T)
+
+# sum(GC$plot == LC$plot)
+# 
+# FT <- FT[FT$PlotID %in% GC$plot ,]
+# FT <- FT[match(GC$plot, FT$PlotID) ,][c(3:7)]
+
+GC.colIndx <- grep("GC.", colnames(GC))
+LC.colIndx <- grep("LC.", colnames(LC))
+
+FinalData[["RawData"]] <- list(GC = GC,
+                               LC = LC)
+
+
+
+GC.meta <- GC[, -GC.colIndx][c(1,2,6,7,8,9,10,11)]
+LC.meta <- LC[, -LC.colIndx][colnames(GC.meta)]
+
+#add columns for GC data
+chks <- names(table(GC.meta$line)[table(GC.meta$line) > 1])
+
+GC.meta <- within(GC.meta, {
+    new <- ifelse(GC.meta$line %in% chks, 0, 1) #if line is a check then assign 0, else 1
+})
+
+GC.meta <- within(GC.meta, {
+    entryc <- ifelse(GC.meta$new > 0, 999, GC.meta$line) #checks will have a name, new entries will have 999
+})
+
+
+#add columns for LC data
+chks <- names(table(LC.meta$line)[table(LC.meta$line) > 1])
+
+LC.meta <- within(LC.meta, {
+    new <- ifelse(LC.meta$line %in% chks, 0, 1) #if line is a check then assign 0, else 1
+})
+
+LC.meta <- within(LC.meta, {
+    entryc <- ifelse(LC.meta$new > 0, 999, LC.meta$line) #checks will have a name, new entries will have 999
+})
+
+##Do cube root tranformation on phenotypes and add new metadata to data
+FT <- FT[FT$PlotID %in% LC$plot ,]
+FT <- FT[match(LC$plot, FT$PlotID) ,]
+
+LC <- cbind(LC.meta, FT[c(3:7)], LC[,LC.colIndx]^(1/3))
+
+FT <- FT[FT$PlotID %in% GC$plot ,]
+GC <- cbind(GC.meta, FT[c(3:7)], GC[,GC.colIndx]^(1/3))
+
+FinalData[["TransformedData"]] <- list(TransformationMethod = "cube root",
+                                       GC = GC,
+                                       LC = LC)
+
+saveRDS(FinalData, "../FinalData.rds") #save to run MM on HCC
+```
+
+## Does FT influence metabolites?
+Run PCA and extract the top 20 PCs. Extract the eigenvalues and fit the base model above. Examine diagonostic plots and remove samples if necessary.
+
+```{r, echo = T, eval = F}
+library(sommer)
+
+rm(list = ls())
+#data <- readRDS("FinalData.rds")
+data <- readRDS("../FinalData.rds")
+
+GC <- data$TransformedData$GC
+LC <- data$TransformedData$LC
+
+GC$block <- as.factor(GC$block)
+GC$new <- as.factor(GC$new)
+GC$entryc <- as.factor(GC$entryc)
+GC$batch <- as.factor(GC$batch)
+
+LC$block <- as.factor(LC$block)
+LC$new <- as.factor(LC$new)
+LC$entryc <- as.factor(LC$entryc)
+LC$batch <- as.factor(LC$batch)
+
+GC.colIndx <- grep("GC.", colnames(GC))
+LC.colIndx <- grep("LC.", colnames(LC))
+
+GCpca <- prcomp(scale(as.matrix(GC[,GC.colIndx]), center = T, scale = T))
+LCpca <- prcomp(scale(as.matrix(LC[,LC.colIndx]), center = T, scale = T))
+
+pvaGC <- round(100*GCpca$sdev^2/sum(GCpca$sdev^2),1)[1:20]
+#[1] 10.5  5.0  4.2  3.1  2.3  2.2  1.9  1.7  1.5  1.4  1.3  1.3  1.2  1.1  1.1  1.0  1.0  0.9  0.9  0.8
+pvaLC <- round(100*LCpca$sdev^2/sum(LCpca$sdev^2),1)[1:20]
+#[1] 14.8  7.1  4.4  4.0  3.3  3.1  2.7  2.5  2.1  1.7  1.7  1.5  1.4  1.2  1.2  1.0  1.0  0.9  0.9  0.9
+
+GC.pcs <- cbind(GC[,-GC.colIndx], GCpca$x[,1:20])
+LC.pcs <- cbind(LC[,-LC.colIndx], LCpca$x[,1:20])
+
+Res <- list()
+
+#################
+## For GC data ##
+#################
+pvals <- array()
+
+for(cmpd in 1:20){
+  tmp.dat <- GC.pcs[c(1:15,(15 + cmpd) )]
+  colnames(tmp.dat)[15:16] <- c("DTH", "Y")
+  #tmp.mod <- asreml(fixed = Y ~ entryc, random = ~block + new:line, data = tmp.dat, aom = T)
+  full.mod <- mmer(fixed = Y ~ entryc + DTH, 
+                  random = ~block + new:line + batch, data = tmp.dat)
+  red.mod <- mmer(fixed = Y ~ entryc, 
+                  random = ~block + new:line + batch, data = tmp.dat)
+  
+  pvals[cmpd] <- pchisq(2*(tail(full.mod$monitor[1,], n = 1) -
+                             tail(red.mod$monitor[1,], n = 1)), 
+                        df = 1, lower.tail = F)
+}
+
+Res[["GC"]] <- pvals
+#  [1] 8.628195e-02 2.665043e-01 1.861494e-02 1.280737e-02 1.380003e-03 2.566091e-05 2.547969e-05 1.965012e-06 8.612982e-06
+# [10] 1.145212e-02 1.905233e-02 2.099181e-01 5.599961e-04 4.919153e-02 1.816224e-01 5.029808e-03 4.738500e-04 1.053124e-02
+# [19] 5.793311e-02 5.729081e-03
+
+#################
+## For LC data ##
+#################
+
+pvals <- array()
+
+for(cmpd in 1:20){
+  tmp.dat <- LC.pcs[c(1:15,(15 + cmpd) )]
+  colnames(tmp.dat)[15:16] <- c("DTH", "Y")
+  #tmp.mod <- asreml(fixed = Y ~ entryc, random = ~block + new:line, data = tmp.dat, aom = T)
+  full.mod <- mmer(fixed = Y ~ entryc + DTH, 
+                  random = ~block + new:line + batch, data = tmp.dat)
+  red.mod <- mmer(fixed = Y ~ entryc, 
+                  random = ~block + new:line + batch, data = tmp.dat)
+  
+  pvals[cmpd] <- pchisq(2*(tail(full.mod$monitor[1,], n = 1) -
+                             tail(red.mod$monitor[1,], n = 1)), 
+                        df = 1, lower.tail = F)
+}
+
+Res[["LC"]] <- pvals
+# [1] 4.438107e-02 1.206525e-01 3.850914e-02 1.029889e-02 3.739902e-02 5.136171e-09 3.096505e-02 5.609002e-09 4.451948e-02
+# [10] 1.968767e-02 4.189020e-09 9.285484e-04 2.519158e-03 5.539216e-07 8.249442e-02 6.161057e-02 2.797706e-04 2.747562e-02
+# [19] 3.187899e-02 3.963938e-03
+```
+
+```{r, echo = T, eval = F}
+library(xtable)
+xtable(data.frame(PC = 1:20, LRT_GC = Res[["GC"]], LRT_LC = Res[["LC"]]),
+       display = c("d", "d", "E", "E"))
+```
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{rrrr}
+  \hline
+ & PC & LRT\_GC & LRT\_LC \\ 
+  \hline
+  1 &   1 & 8.63E-02 & 4.44E-02 \\ 
+  2 &   2 & 2.67E-01 & 1.21E-01 \\ 
+  3 &   3 & 1.86E-02 & 3.85E-02 \\ 
+  4 &   4 & 1.28E-02 & 1.03E-02 \\ 
+  5 &   5 & 1.38E-03 & 3.74E-02 \\ 
+  6 &   6 & 2.57E-05 & 5.14E-09 \\ 
+  7 &   7 & 2.55E-05 & 3.10E-02 \\ 
+  8 &   8 & 1.97E-06 & 5.61E-09 \\ 
+  9 &   9 & 8.61E-06 & 4.45E-02 \\ 
+  10 &  10 & 1.15E-02 & 1.97E-02 \\ 
+  11 &  11 & 1.91E-02 & 4.19E-09 \\ 
+  12 &  12 & 2.10E-01 & 9.29E-04 \\ 
+  13 &  13 & 5.60E-04 & 2.52E-03 \\ 
+  14 &  14 & 4.92E-02 & 5.54E-07 \\ 
+  15 &  15 & 1.82E-01 & 8.25E-02 \\ 
+  16 &  16 & 5.03E-03 & 6.16E-02 \\ 
+  17 &  17 & 4.74E-04 & 2.80E-04 \\ 
+  18 &  18 & 1.05E-02 & 2.75E-02 \\ 
+  19 &  19 & 5.79E-02 & 3.19E-02 \\ 
+  20 &  20 & 5.73E-03 & 3.96E-03 \\ 
+   \hline
+\end{tabular}
+\end{table}
+
+Need to include DTH in models. The lower PCs (4-20) only explain < 3\% individually.
+
+## Checking for outlier samples
+Extract the top 20 PCs for GC and LC data. Run the base model above to identify potential outliers for each of the 20 PCs. I placed more emphasis on the first few PCs. The base model above wasfit in sommer because it gives nearly the same results as asreml and it is much easier to deal with sommer objects on my PC compared to asreml since I do not have a license. 
+
+```{r, echo = T, eval = F}
+# library(asreml)
+# rm(list = ls())
+# 
+# #data <- readRDS("FinalData.rds")
+# data <- readRDS("../DP_Ith_phenoData/FinalData.rds")
+# 
+# GC <- data$TransformedData$GC
+# LC <- data$TransformedData$LC
+# 
+# GC$block <- as.factor(GC$block)
+# GC$new <- as.factor(GC$new)
+# GC$entryc <- as.factor(GC$entryc)
+# 
+# LC$block <- as.factor(LC$block)
+# LC$new <- as.factor(LC$new)
+# LC$entryc <- as.factor(LC$entryc)
+# 
+# GC.colIndx <- grep("GC.", colnames(GC))
+# LC.colIndx <- grep("LC.", colnames(LC))
+# 
+# GC.pcs <- cbind(GC[,-GC.colIndx], prcomp(as.matrix(GC[,GC.colIndx]))$x[,1:20])
+# LC.pcs <- cbind(LC[,-LC.colIndx], prcomp(as.matrix(LC[,LC.colIndx]))$x[,1:20])
+# 
+# Res <- list()
+# 
+# #################
+# ## For GC data ##
+# #################
+# 
+# tmpRes <- list()
+# 
+# for(cmpd in 1:20){
+#   tmp.dat <- GC.pcs[c(4,5,8,9,(9 + cmpd) )]
+#   colnames(tmp.dat)[5] <- "Y"
+#   tmp.mod <- asreml(fixed = Y ~ entryc, random = ~block + new:line, data = tmp.dat, aom = T)
+#   stdRes <- resid(tmp.mod, type="stdCond") #standardized residuals
+#   nedf <- tmp.mod$nedf
+#   stuRes <- stdRes / sqrt( (nedf - stdRes^2)/(nedf - 1) ) #studentized residuals
+#   
+#   tmpRes[[cmpd]] <- list(mod = tmp.mod,
+#                          stdRes = stdRes,
+#                          stuRes = stuRes)
+#   
+#   pdf(paste0("GC_PC", cmpd, ".pdf"))
+#   plot(tmp.mod)
+#   dev.off()
+# }
+# 
+# Res[["GC"]] <- tmpRes
+# 
+# #################
+# ## For LC data ##
+# #################
+# 
+# tmpRes <- list()
+# 
+# for(cmpd in 1:20){
+#   tmp.dat <- LC.pcs[c(4,5,8,9,(9 + cmpd) )]
+#   colnames(tmp.dat)[5] <- "Y"
+#   tmp.mod <- asreml(fixed = Y ~ entryc, random = ~block + new:line, data = tmp.dat, aom = T)
+#   stdRes <- resid(tmp.mod, type="stdCond") #standardized residuals
+#   nedf <- tmp.mod$nedf
+#   stuRes <- stdRes / sqrt( (nedf - stdRes^2)/(nedf - 1) ) #studentized residuals
+#   
+#   tmpRes[[cmpd]] <- list(mod = tmp.mod,
+#                          stdRes = stdRes,
+#                          stuRes = stuRes)
+#   
+#   pdf(paste0("LC_PC", cmpd, ".pdf"))
+#   plot(tmp.mod)
+#   dev.off()
+# }
+# 
+# Res[["LC"]] <- tmpRes
+# 
+# saveRDS(Res, "OutlierCheck.rds")
+# 
+
+# ### Run for all metabolites too
+# rm(list = ls())
+# 
+# data <- readRDS("FinalData.rds")
+# 
+# GC <- data$TransformedData$GC
+# LC <- data$TransformedData$LC
+# 
+# GC$block <- as.factor(GC$block)
+# GC$new <- as.factor(GC$new)
+# GC$entryc <- as.factor(GC$entryc)
+# 
+# LC$block <- as.factor(LC$block)
+# LC$new <- as.factor(LC$new)
+# LC$entryc <- as.factor(LC$entryc)
+# 
+# GC.colIndx <- grep("GC.", colnames(GC))
+# LC.colIndx <- grep("LC.", colnames(LC))
+# 
+# Res <- list()
+# 
+# #################
+# ## For GC data ##
+# #################
+# 
+# tmpRes <- list()
+# 
+# for(cmpd in 1:length(GC.colIndx)){
+#   tmp.dat <- GC.pcs[c(4,5,8,9,GC.colIndx[cmpd] )]
+#   colnames(tmp.dat)[5] <- "Y"
+#   tmp.mod <- asreml(fixed = Y ~ entryc, random = ~block + new:line, data = tmp.dat, aom = T)
+#   stdRes <- resid(tmp.mod, type="stdCond") #standardized residuals
+#   nedf <- tmp.mod$nedf
+#   stuRes <- stdRes / sqrt( (nedf - stdRes^2)/(nedf - 1) ) #studentized residuals
+#   
+#   tmpRes[[cmpd]] <- list(mod = tmp.mod,
+#                          stdRes = stdRes,
+#                          stuRes = stuRes)
+#   
+#   pdf(paste0("GC_PC", cmpd, ".pdf"))
+#   plot(tmp.mod)
+#   dev.off()
+# }
+# 
+# Res[["GC"]] <- tmpRes
+# 
+# #################
+# ## For LC data ##
+# #################
+# 
+# tmpRes <- list()
+# 
+# for(cmpd in 1:length(LC.colIndx)){
+#   tmp.dat <- LC.pcs[c(4,5,8,9,LC.colIndx[cmpd] )]
+#   colnames(tmp.dat)[5] <- "Y"
+#   tmp.mod <- asreml(fixed = Y ~ entryc, random = ~block + new:line, data = tmp.dat, aom = T)
+#   stdRes <- resid(tmp.mod, type="stdCond") #standardized residuals
+#   nedf <- tmp.mod$nedf
+#   stuRes <- stdRes / sqrt( (nedf - stdRes^2)/(nedf - 1) ) #studentized residuals
+#   
+#   tmpRes[[cmpd]] <- list(mod = tmp.mod,
+#                          stdRes = stdRes,
+#                          stuRes = stuRes)
+#   
+#   pdf(paste0("LC_PC", cmpd, ".pdf"))
+#   plot(tmp.mod)
+#   dev.off()
+# }
+# 
+# Res[["LC"]] <- tmpRes
+```
+
+Loop through the first 20 PCs for LC and GC and plot. The mmer object for each mode is saved as well as the standardized residuals.
+```{r, echo = T, eval = F}
+library(sommer)
+
+rm(list = ls())
+#data <- readRDS("FinalData.rds")
+data <- readRDS("../FinalData.rds")
+
+GC <- data$TransformedData$GC #sample with all 0's is already removed
+LC <- data$TransformedData$LC
+
+GC$block <- as.factor(GC$block)
+GC$new <- as.factor(GC$new)
+GC$entryc <- as.factor(GC$entryc)
+GC$batch <- as.factor(GC$batch)
+
+LC$block <- as.factor(LC$block)
+LC$new <- as.factor(LC$new)
+LC$entryc <- as.factor(LC$entryc)
+LC$batch <- as.factor(LC$batch)
+
+GC.colIndx <- grep("GC.", colnames(GC))
+LC.colIndx <- grep("LC.", colnames(LC))
+
+GCpca <- prcomp(scale(as.matrix(GC[,GC.colIndx]), center = T, scale = T))
+LCpca <- prcomp(scale(as.matrix(LC[,LC.colIndx]), center = T, scale = T))
+
+GC.pcs <- cbind(GC[,-GC.colIndx], GCpca$x[,1:20])
+LC.pcs <- cbind(LC[,-LC.colIndx], LCpca$x[,1:20])
+
+Res <- list()
+
+#################
+## For GC data ##
+#################
+
+tmpRes <- list()
+
+dir.create("../OutlierChk")
+
+for(cmpd in 1:20){
+  tmp.dat <- GC.pcs[c(1:15,(15 + cmpd) )]
+  colnames(tmp.dat)[15:16] <- c("DTH", "Y")
+  #tmp.mod <- asreml(fixed = Y ~ entryc, random = ~block + new:line, data = tmp.dat, aom = T)
+  tmp.mod <- mmer(fixed = Y ~ entryc + DTH, 
+                  random = ~block + new:line + batch, data = tmp.dat)
+  stdRes <- resid(tmp.mod) #standardized residuals
+  #nedf <- nrow(tmp.dat) - nrow(coef(tmp.mod)) #residual df
+  #stuRes <- stdRes / sqrt( (nedf - stdRes^2)/(nedf - 1) ) #studentized residuals
+  
+  tmpRes[[cmpd]] <- list(mod = tmp.mod,
+                         stdRes = scale(tmp.mod$residuals))
+  
+  pdf(paste0("../OutlierChk/GC_PC", cmpd, ".pdf"))
+  plot(tmp.mod)
+  dev.off()
+}
+
+Res[["GC"]] <- tmpRes
+
+#################
+## For LC data ##
+#################
+
+tmpRes <- list()
+
+for(cmpd in 1:20){
+  tmp.dat <- LC.pcs[c(1:15,(15 + cmpd) )]
+  colnames(tmp.dat)[15:16] <- c("DTH", "Y")
+  tmp.mod <- mmer(fixed = Y ~ entryc + DTH, 
+                  random = ~block + new:line + batch, data = tmp.dat)
+  #nedf <- nrow(tmp.dat) - nrow(coef(tmp.mod)) #residual df
+  #stuRes <- stdRes / sqrt( (nedf - stdRes^2)/(nedf - 1) ) #studentized residuals
+  
+  tmpRes[[cmpd]] <- list(mod = tmp.mod,
+                         stdRes = scale(tmp.mod$residuals))
+  
+  pdf(paste0("../OutlierChk/LC_PC", cmpd, ".pdf"))
+  plot(tmp.mod)
+  dev.off()
+}
+
+Res[["LC"]] <- tmpRes
+
+saveRDS(Res, "../OutlierChk/OutlierCheck.rds")
+```
+
+This chunk parses the output above to identify samples that may be outliers. Each plot was visually inspected to identify potential outliers. The function findBadSampleGC takes some threshold value for the standardized residuals, the metadata that assigns the index/row of the st. residuals to sample information, a trait inxed that indicates which PC to examine and a condition that tells the function whether it shoudl return samples that are less than or greater than the given threshold. 
+```{r, echo = T, eval = F}
+#
+rm(list = ls())
+
+Res <- readRDS("../OutlierChk/OutlierCheck.rds")
+data <- readRDS("../FinalData.rds")
+
+GC <- data$TransformedData$GC
+LC <- data$TransformedData$LC
+
+findBadSampleGC <- function(results = NULL, thresh = NULL, metadata = NULL, trIndx = NULL, cond = NULL){
+  if(cond == "less"){
+    indx <- which(results[[trIndx]]$stdRes < thresh)
+  }else{
+    indx <- which(results[[trIndx]]$stdRes > thresh)
+  }
+  info <- metadata[indx,]
+  return(list(info = info,
+              indx = indx))
+}
+
+getHat <- function(sommerRes = NULL, trIndx = NULL){
+  #taken from sommer plot function to give same results
+  #will return leverage given output from sommer mmer function; acts on list so need to provide index
+  x <- sommerRes[[trIndx]]$mod
+  prov <- mmer(fixed = x$call$fixed, 
+               rcov = x$call$rcov, data = x$data, 
+        return.param = TRUE, na.method.Y = x$call$na.method.Y, 
+        na.method.X = x$call$na.method.X)
+  Xlist <- list()
+  for (o in 1:length(prov[[3]])) {
+        Xlist[[o]] <- kronecker(prov[[2]][[o]], prov[[3]][[o]])
+  }
+  Xm <- do.call(cbind, Xlist)
+  hat <- Xm %*% solve(t(Xm) %*% x$Vi %*% Xm) %*% t(Xm) %*% 
+            x$Vi
+  return(diag(hat))
+}
+    
+    
+#############
+## GC data ##
+#############
+#ROW NUMBER IN METADATA IS NOT ORDERED! Go by the values in indx
+
+#for PC13
+findBadSampleGC(metadata = GC[,1:15], thresh = -3, trIndx = 13, results = Res$GC, cond = "less")
+#381 187-1913-104-OA1130_1     3 1913 104 OA1130_1    19   2     36   1    999
+getHat(sommerRes = Res$GC, trIndx = 14)[198]
+#indx: 186
+
+#for PC14
+findBadSampleGC(metadata = GC[,1:15], thresh = -6, trIndx = 14, results = Res$GC, cond = "less")
+#204 199-920-512-PI_536549     3  920 512 PI_536549     9   9     20   1    999
+getHat(sommerRes = Res$GC, trIndx = 14)[198]
+#indx: 198
+
+#for PC15
+findBadSampleGC(metadata = GC[,1:15], thresh = -4, trIndx = 15, results = Res$GC, cond = "less")
+#204 199-920-512-PI_536549     3  920 512 PI_536549     9   9     20   1    999
+getHat(sommerRes = Res$GC, trIndx = 14)[198]
+#indx: 198
+
+#############
+## LC data ##
+#############
+```
+
+For the most part all samples look pretty good. There are a few outliers for some PCs, but they explain < 2\% of total variation. Moreover, they are not outliers for other PCs, so I think it is best to keep them.
+
+\begin{figure}
+\includegraphics[width=4.5in]{OutlierChk/GC_PC1.pdf}
+\captionsetup{width=4.5in}
+\caption{\textbf{Diagnostic plots for PC1 for GC data}. Was ran with top 20 PCs, but only showing first PC.}
+\label{FigOutliers1}
+\end{figure}
+
+\begin{figure}
+\includegraphics[width=4.5in]{OutlierChk/GC_PC13.pdf}
+\captionsetup{width=4.5in}
+\caption{\textbf{Diagnostic plots for PC13 for GC data}. Was ran with top 20 PCs, but only showing thirteenth PC.}
+\label{FigOutliers2}
+\end{figure}
+
+\begin{figure}
+\includegraphics[width=4.5in]{OutlierChk/LC_PC1.pdf}
+\captionsetup{width=4.5in}
+\caption{\textbf{Diagnostic plots for PC1 for LC data}. Was ran with top 20 PCs, but only showing first PC.}
+\label{FigOutliers3}
+\end{figure}
+
+\begin{figure}
+\includegraphics[width=4.5in]{OutlierChk/LC_PC2.pdf}
+\captionsetup{width=4.5in}
+\caption{\textbf{Diagnostic plots for PC2 for LC data}. Was ran with top 20 PCs, but only showing second PC.}
+\label{FigOutliers4}
+\end{figure}
+
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+data <- readRDS("../FinalData.rds")
+
+GC <- data$TransformedData$GC
+LC <- data$TransformedData$LC
+
+GC.colIndx <- grep("GC.", colnames(GC))
+LC.colIndx <- grep("LC.", colnames(LC))
+
+GC.dat <- GC[,GC.colIndx]
+LC.dat <- LC[,LC.colIndx]
+
+OutliersRemoved <- list(GC = cbind(GC[,-GC.colIndx], GC.dat),
+                        LC = cbind(LC[,-LC.colIndx], LC.dat))
+
+data$OutliersRemoved <- OutliersRemoved #this is transformed data with outliers removed. There is no differnce between this and the tranformed data set. I am only including this to be consistent with previous analyses and to minimize the modification of existing code
+
+saveRDS(data, "../FinalData.rds")
+```
+
+# Model selection
+Do we need to account for spatial variation? These analyses were run using variations on the base model above for each of the 20 PCs for GC and LC. Asreml was used since it has more options to account for spatial variation. An AR1 and a Gaussian power model was used to model spatial row, column and row:column effects. The results were compared to the base model above where no spatial covariance strucutre was used for the residual. The ModelSelection.rds file contains two lists, one for GC and one for LC. In each of these lists there are 20 dataframes, one for each PC. These dataframes contain AIC values, the type of model, and whether the model converged. Everything was run on HCC.
+```{r, echo = T, eval = F}
+#library(sommer)
+library(asreml)
+library(reshape2)
+
+rm(list = ls())
+data <- readRDS("FinalData.rds")
+#data <- readRDS("../DP_Ith_phenoData/FinalData.rds")
+
+GC <- data$OutliersRemoved$GC
+LC <- data$OutliersRemoved$LC
+
+#GC <- data$OutliersRemoved$GC
+#LC <- data$OutliersRemoved$LC
+
+GC$block <- as.factor(GC$block)
+GC$new <- as.factor(GC$new)
+GC$entryc <- as.factor(GC$entryc)
+GC$batch <- as.factor(GC$batch)
+
+LC$block <- as.factor(LC$block)
+LC$new <- as.factor(LC$new)
+LC$entryc <- as.factor(LC$entryc)
+LC$batch <- as.factor(LC$batch)
+
+GC.colIndx <- grep("GC.", colnames(GC))
+LC.colIndx <- grep("LC.", colnames(LC))
+
+GCpca <- prcomp(scale(as.matrix(GC[,GC.colIndx]), center = T, scale = T))
+LCpca <- prcomp(scale(as.matrix(LC[,LC.colIndx]), center = T, scale = T))
+
+GC.pcs <- cbind(GC[,-GC.colIndx], GCpca$x[,1:20])
+LC.pcs <- cbind(LC[,-LC.colIndx], LCpca$x[,1:20])
+
+Res <- list()
+#################
+## For GC data ##
+#################
+tmp.list <- list()
+for(cmpd in 1:20){
+  tmp.dat <- GC.pcs[c(5:10, 15, 2, (15 + cmpd) )]
+  colnames(tmp.dat)[c(7,9)] <- c("DTH", "Y")
+  #tmp.mod <- asreml(fixed = Y ~ entryc, random = ~block + new:line, data = tmp.dat, aom = T)
+  #nonsp.mod <- mmer(fixed = Y ~ entryc + DTH,
+  #                  random = ~block + new:line,
+  #                  data = tmp.dat)
+  #sp.mod <- mmer(fixed = Y ~ entryc + DTH, 
+  #               random = ~new:line, 
+  #               rcov = ~vs(spl2D(x.coord = row, y.coord = column), units),
+  #               data = tmp.dat)
+  
+  #pad for asreml
+  pad <- melt(dcast(row ~ column, value.var = "block", data = tmp.dat[c("block", "row", "column")]),
+              id.vars = "row")
+  pad <- pad[is.na(pad$value) ,]
+  pad <- data.frame(line = NA, block = NA, row = pad$row, column = pad$variable, new = NA, entryc = NA, DTH = NA, batch = NA, Y = NA)
+  tmp.dat <- rbind(tmp.dat, pad)
+  tmp.dat <- tmp.dat[order(as.numeric(as.character(tmp.dat$row))) ,]
+  tmp.dat <- tmp.dat[order(as.numeric(as.character(tmp.dat$column))) ,]
+  tmp.dat$row <- as.factor(tmp.dat$row)
+  tmp.dat$column <- as.factor(tmp.dat$column)
+  
+  #fit models
+  sp.mod_n.AR1 <- asreml(fixed = Y ~ entryc + DTH, 
+                         random = ~new:line + batch, 
+                         rcov= ~(column):ar1(row), 
+                         data = tmp.dat, na.method.X = "include")
+  AIC_sp.mod_n.AR1 <- -2*sp.mod_n.AR1$loglik+2*length(sp.mod_n.AR1$gammas)
+  
+  sp.mod_AR1.n <- asreml(fixed = Y ~ entryc + DTH, 
+                         random = ~new:line + batch, rcov= ~ar1(column):(row), 
+                         data = tmp.dat, na.method.X = "include")
+  AIC_sp.mod_AR1.n <- -2*sp.mod_AR1.n$loglik+2*length(sp.mod_AR1.n$gammas)
+  
+  sp.mod_AR1.AR1 <- asreml(fixed = Y ~ entryc + DTH, 
+                           random = ~new:line + batch, 
+                           rcov= ~ar1(column):ar1(row), 
+                           data = tmp.dat, na.method.X = "include")
+  AIC_sp.mod_AR1.AR1 <- -2*sp.mod_AR1.AR1$loglik+2*length(sp.mod_AR1.AR1$gammas)
+  
+  sp.mod_n.gau <- asreml(fixed = Y ~ entryc + DTH, 
+                         random = ~new:line + batch, 
+                         rcov= ~(column):gau(row), 
+                         data = tmp.dat, na.method.X = "include")
+  AIC_sp.mod_n.gau <- -2*sp.mod_n.gau$loglik+2*length(sp.mod_n.gau$gammas)
+  
+  sp.mod_gau.n <- asreml(fixed = Y ~ entryc + DTH, 
+                         random = ~new:line + batch, 
+                         rcov= ~gau(column):(row), 
+                         data = tmp.dat, na.method.X = "include")
+  AIC_sp.mod_gau.n <- -2*sp.mod_gau.n$loglik+2*length(sp.mod_gau.n$gammas)
+  
+  sp.mod_gau.gau <- asreml(fixed = Y ~ entryc + DTH, 
+                           random = ~new:line + batch, 
+                           rcov= ~gau(column):gau(row), 
+                           data = tmp.dat, na.method.X = "include")
+  AIC_sp.mod_gau.gau <- -2*sp.mod_gau.gau$loglik+2*length(sp.mod_gau.gau$gammas)
+  
+  simp.mod <- asreml(fixed = Y ~ entryc + DTH, 
+                     random = ~block + new:line + batch, 
+                     data = tmp.dat[-is.na(tmp.dat$block),], na.method.X = "include")
+  AIC_simp.mod <- -2*simp.mod$loglik+2*length(simp.mod$gammas)
+  
+  tmp.list[[cmpd]] <- data.frame(model = c("col:ar1(row)", "ar1(col):row", "ar1(col):ar1(row)", 
+                                     "col:gau(row)", "gau(col):row", "gau(col):gau(row)", 
+                                     "non-sp"),
+                           converge = c(sp.mod_n.AR1$converge, 
+                                        sp.mod_AR1.n$converge, sp.mod_AR1.AR1$converge,
+                                        sp.mod_n.gau$converge, sp.mod_gau.n$converge,
+                                        sp.mod_gau.gau$converge, simp.mod$converge),
+                           AIC = c(AIC_sp.mod_n.AR1, AIC_sp.mod_AR1.n, AIC_sp.mod_AR1.AR1,
+                                   AIC_sp.mod_n.gau, AIC_sp.mod_gau.n, AIC_sp.mod_gau.gau,
+                                   AIC_simp.mod))
+}
+
+Res[["GC"]] <- tmp.list
+
+#################
+## For LC data ##
+#################
+tmp.list <- list()
+for(cmpd in 1:20){
+  tmp.dat <- LC.pcs[c(5:10, 15, 2, (15 + cmpd) )]
+  colnames(tmp.dat)[c(7,9)] <- c("DTH", "Y")
+  #tmp.mod <- asreml(fixed = Y ~ entryc, random = ~block + new:line, data = tmp.dat, aom = T)
+  #nonsp.mod <- mmer(fixed = Y ~ entryc + DTH,
+  #                  random = ~block + new:line,
+  #                  data = tmp.dat)
+  #sp.mod <- mmer(fixed = Y ~ entryc + DTH, 
+  #               random = ~new:line, 
+  #               rcov = ~vs(spl2D(x.coord = row, y.coord = column), units),
+  #               data = tmp.dat)
+  
+  #pad for asreml
+  pad <- melt(dcast(row ~ column, value.var = "block", data = tmp.dat[c("block", "row", "column")]),
+              id.vars = "row")
+  pad <- pad[is.na(pad$value) ,]
+  pad <- data.frame(line = NA, block = NA, row = pad$row, column = pad$variable, new = NA, entryc = NA, DTH = NA, batch = NA, Y = NA)
+  tmp.dat <- rbind(tmp.dat, pad)
+  tmp.dat <- tmp.dat[order(as.numeric(as.character(tmp.dat$row))) ,]
+  tmp.dat <- tmp.dat[order(as.numeric(as.character(tmp.dat$column))) ,]
+  tmp.dat$row <- as.factor(tmp.dat$row)
+  tmp.dat$column <- as.factor(tmp.dat$column)
+  
+  #fit models
+  sp.mod_n.AR1 <- asreml(fixed = Y ~ entryc + DTH, 
+                         random = ~new:line + batch, 
+                         rcov= ~(column):ar1(row), 
+                         data = tmp.dat, na.method.X = "include")
+  AIC_sp.mod_n.AR1 <- -2*sp.mod_n.AR1$loglik+2*length(sp.mod_n.AR1$gammas)
+  
+  sp.mod_AR1.n <- asreml(fixed = Y ~ entryc + DTH, 
+                         random = ~new:line + batch, 
+                         rcov= ~ar1(column):(row), 
+                         data = tmp.dat, na.method.X = "include")
+  AIC_sp.mod_AR1.n <- -2*sp.mod_AR1.n$loglik+2*length(sp.mod_AR1.n$gammas)
+  
+  sp.mod_AR1.AR1 <- asreml(fixed = Y ~ entryc + DTH, 
+                           random = ~new:line + batch, 
+                           rcov= ~ar1(column):ar1(row), 
+                           data = tmp.dat, na.method.X = "include")
+  AIC_sp.mod_AR1.AR1 <- -2*sp.mod_AR1.AR1$loglik+2*length(sp.mod_AR1.AR1$gammas)
+  
+  sp.mod_n.gau <- asreml(fixed = Y ~ entryc + DTH, 
+                         random = ~new:line + batch, 
+                         rcov= ~(column):gau(row), 
+                         data = tmp.dat, na.method.X = "include")
+  AIC_sp.mod_n.gau <- -2*sp.mod_n.gau$loglik+2*length(sp.mod_n.gau$gammas)
+  
+  sp.mod_gau.n <- asreml(fixed = Y ~ entryc + DTH, 
+                         random = ~new:line + batch, 
+                         rcov= ~gau(column):(row), 
+                         data = tmp.dat, na.method.X = "include")
+  AIC_sp.mod_gau.n <- -2*sp.mod_gau.n$loglik+2*length(sp.mod_gau.n$gammas)
+  
+  sp.mod_gau.gau <- asreml(fixed = Y ~ entryc + DTH, 
+                           random = ~new:line + batch, 
+                           rcov= ~gau(column):gau(row), 
+                           data = tmp.dat, na.method.X = "include")
+  AIC_sp.mod_gau.gau <- -2*sp.mod_gau.gau$loglik+2*length(sp.mod_gau.gau$gammas)
+  
+  simp.mod <- asreml(fixed = Y ~ entryc + DTH, 
+                     random = ~block + new:line + batch, 
+                     data = tmp.dat[-is.na(tmp.dat$block),], na.method.X = "include")
+  AIC_simp.mod <- -2*simp.mod$loglik+2*length(simp.mod$gammas)
+  
+  tmp.list[[cmpd]] <- data.frame(model = c("col:ar1(row)", "ar1(col):row", "ar1(col):ar1(row)", 
+                                     "col:gau(row)", "gau(col):row", "gau(col):gau(row)", 
+                                     "non-sp"),
+                           converge = c(sp.mod_n.AR1$converge, sp.mod_AR1.n$converge,
+                                        sp.mod_AR1.AR1$converge, sp.mod_n.gau$converge,
+                                        sp.mod_gau.n$converge, sp.mod_gau.gau$converge,
+                                        simp.mod$converge),
+                           AIC = c(AIC_sp.mod_n.AR1, AIC_sp.mod_AR1.n, AIC_sp.mod_AR1.AR1,
+                                   AIC_sp.mod_n.gau, AIC_sp.mod_gau.n, AIC_sp.mod_gau.gau,
+                                   AIC_simp.mod))
+}
+
+Res[["LC"]] <- tmp.list
+
+saveRDS(Res, "ModelSelection.rds")
+```
+
+
+Compile results into a nice table. If the model did not converge replace the AIC values with NA.
+```{r, echo = T, eval = F}
+library(xtable)
+library(reshape2)
+rm(list = ls())
+
+Res <- readRDS("../ModelSelection.rds")
+GC <- Res[[1]]
+LC <- Res[[2]]
+
+GCres <- do.call("rbind", GC)
+LCres <- do.call("rbind", LC)
+
+GCres$AIC[which(GCres$converge == F)] <- NA
+LCres$AIC[which(LCres$converge == F)] <- NA
+
+GCres$PC <- rep(1:20, each = 7)
+LCres$PC <- rep(1:20, each = 7)
+
+GCres <- dcast(model ~ PC, value.var = "AIC", data = GCres)
+LCres <- dcast(model ~ PC, value.var = "AIC", data = LCres)
+
+colnames(GCres)[2:ncol(GCres)] <- paste0("PC", colnames(GCres)[2:ncol(GCres)])
+colnames(LCres)[2:ncol(LCres)] <- paste0("PC", colnames(LCres)[2:ncol(LCres)])
+
+xtable(GCres)
+xtable(LCres)
+```
+
+
+\newpage
+\begin{table}
+\caption{\textbf{AIC for spatial models vs base for GC data}}
+\centering
+\tiny
+\begin{tabular}{rlrrrrrrrrrr}
+  \hline
+ & model & PC1 & PC2 & PC3 & PC4 & PC5 & PC6 & PC7 & PC8 & PC9 & PC10 \\ 
+  \hline
+1 & ar1(col):ar1(row) & 2192.74 & 1422.36 & 1813.30 & 1495.15 & 1507.81 & 1501.65 & 1497.20 & 1397.00 & 1369.09 & 1367.80 \\ 
+  2 & ar1(col):row & 2191.93 & 1420.99 & 1812.28 & 1495.83 & 1505.84 & 1501.91 & 1496.24 & 1398.47 & 1367.33 & 1365.80 \\ 
+  3 & col:ar1(row) & 2190.78 & 1425.03 & 1811.38 & 1493.42 & 1505.97 & 1501.06 & 1496.05 & 1395.20 & 1373.06 & 1366.31 \\ 
+  4 & col:gau(row) & 2191.97 & 1424.97 & 1811.39 & 1493.24 & 1506.00 & 1500.71 & 1497.12 & 1395.03 & 1373.18 & 1366.31 \\ 
+  5 & gau(col):gau(row) & 2193.94 & 1421.10 & 1813.39 & 1495.00 &  & 1501.35 & 1498.51 & 1396.85 & 1369.98 & 1367.79 \\ 
+  6 & gau(col):row & 2191.94 & 1419.85 & 1812.42 & 1495.86 & 1506.00 & 1501.93 & 1496.51 & 1398.48 & 1368.22 & 1365.79 \\ 
+  7 & non-sp & 2186.97 & 1421.67 & 1808.55 & 1492.32 & 1501.20 & 1500.46 & 1493.48 & 1395.17 & 1361.77 & 1362.17 \\ 
+   \hline
+\end{tabular}
+\end{table}
+
+\small
+\begin{table}
+\caption{\textbf{AIC for spatial models vs base for LC data}}
+\centering
+\tiny
+\begin{tabular}{rlrrrrrrrrrr}
+  \hline
+ & model & PC1 & PC2 & PC3 & PC4 & PC5 & PC6 & PC7 & PC8 & PC9 & PC10 \\ 
+  \hline
+1 & ar1(col):ar1(row) & 2445.67 & 2166.65 & 2030.55 & 1952.63 & 1875.98 & 1839.73 & 1590.41 & 1776.28 & 1677.17 & 1616.41 \\ 
+  2 & ar1(col):row & 2443.72 & 2165.10 & 2028.75 & 1952.01 & 1874.19 & 1837.74 & 1588.42 & 1774.86 & 1675.37 & 1615.87 \\ 
+  3 & col:ar1(row) & 2444.08 & 2164.93 & 2028.85 & 1951.77 & 1874.92 & 1842.77 & 1588.44 & 1788.01 & 1677.35 & 1614.42 \\ 
+  4 & col:gau(row) & 2444.08 & 2165.41 & 2028.89 & 1951.71 & 1875.26 & 1842.78 &  & 1787.97 & 1677.37 & 1615.89 \\ 
+  5 & gau(col):gau(row) & 2445.67 & 2167.04 & 2030.56 & 1952.82 &  & 1839.38 &  &  & 1677.85 &  \\ 
+  6 & gau(col):row & 2443.72 & 2165.04 & 2028.72 & 1952.24 & 1875.26 & 1837.38 & 1588.42 &  & 1675.99 & 1615.89 \\ 
+  7 & non-sp & 2439.08 & 2160.60 & 2023.60 & 1948.78 & 1870.38 & 1835.70 & 1584.92 & 1777.70 & 1666.53 & 1612.93 \\ 
+   \hline
+\end{tabular}
+\end{table}
+
+\newpage
+
+The base model is the best in nearly all cases.
+
+# Calculating BLUPs
+I fit the simple base model described above in sommer. These analyses were run on the cluster. For each metabolite BLUPs are stored in a large matrix and the information on whether the model converged or not is stored in a vector. Both objects were put into a list and saved as an RDS file. Additional model information was discarded to limit the number of files written to the disk. Analyses for GC and LC was run seperately.
+
+## GCMS
+```{r, echo = T, eval = F}
+library(sommer)
+
+rm(list = ls())
+
+data <- readRDS("FinalData.rds")
+#data <- readRDS("../FinalData.rds")
+
+GC <- data$OutliersRemoved$GC
+
+GC$block <- as.factor(GC$block)
+GC$new <- as.factor(GC$new)
+GC$entryc <- as.factor(GC$entryc)
+GC$row <- as.factor(GC$row)
+GC$column <- as.factor(GC$column)
+GC$batch <- as.factor(GC$batch)
+
+GC.colIndx <- grep("GC.", colnames(GC))
+
+#Places to store the results
+BLUPs <- matrix(NA, ncol = length(GC.colIndx), nrow = 374)
+drBLUPs <- matrix(NA, ncol = length(GC.colIndx), nrow = 374)
+convInfo <- array()
+H2 <- NULL
+
+#################
+## For GC data ##
+#################
+for(cmpd in 1:length(GC.colIndx)){
+  tmp.dat <- GC[c(1:15,(15 + cmpd) )]
+  colnames(tmp.dat)[15:16] <- c("DTH", "Y")
+  
+  tmp.mod <- mmer(fixed = Y ~ entryc + DTH, 
+                  random = ~block + new:line + batch, 
+                  data = tmp.dat, na.method.X = "include")
+  
+  PEV <- diag(tmp.mod$PevU$`new:line`$Y)
+  PEV <- PEV[grep("new1", names(PEV))]
+  varG <- as.numeric(tmp.mod$sigma$`new:line`)
+  
+  tmp.BLUPs <- tmp.mod$U$`new:line`$Y[grep("new1", names(tmp.mod$U$`new:line`$Y))]
+  H2 <- rbind(H2, pin(tmp.mod, h2 ~ V2 / ( V2 + V4)))
+  BLUPs[,cmpd] <- tmp.BLUPs #blups
+  drBLUPs[,cmpd] <- tmp.BLUPs / (1 - PEV/varG)#deregressed blups checks will have NA
+  convInfo[cmpd] <- tmp.mod$convergence
+}
+
+colnames(BLUPs) <- colnames(drBLUPs) <- row.names(H2) <- colnames(GC)[GC.colIndx]
+Lines <- sub("new1:line", "", names(tmp.BLUPs))
+
+saveRDS(list(BLUPs = data.frame(line = Lines, BLUPs),
+             drBLUPs = data.frame(line = Lines, drBLUPs),
+             H2 = H2,
+             converged = convInfo),
+        "GC_BLUPs.rds")
+```
+
+```{r, echo = T, eval = F}
+library(sommer)
+
+rm(list = ls())
+
+data <- readRDS("FinalData.rds")
+#data <- readRDS("../FinalData.rds")
+
+LC <- data$OutliersRemoved$LC
+
+LC$block <- as.factor(LC$block)
+LC$new <- as.factor(LC$new)
+LC$entryc <- as.factor(LC$entryc)
+LC$row <- as.factor(LC$row)
+LC$column <- as.factor(LC$column)
+LC$batch <- as.factor(LC$batch)
+
+LC.colIndx <- grep("LC.", colnames(LC))
+
+#Places to store the results
+BLUPs <- matrix(NA, ncol = length(LC.colIndx), nrow = 375)
+drBLUPs <- matrix(NA, ncol = length(LC.colIndx), nrow = 375)
+convInfo <- array()
+H2 <- NULL
+
+#################
+## For LC data ##
+#################
+for(cmpd in 1:length(LC.colIndx)){
+  tmp.dat <- LC[c(1:15,(15 + cmpd) )]
+  colnames(tmp.dat)[15:16] <- c("DTH", "Y")
+  
+  tmp.mod <- mmer(fixed = Y ~ entryc + DTH, 
+                  random = ~block + new:line + batch, 
+                  data = tmp.dat, na.method.X = "include")
+  
+  PEV <- diag(tmp.mod$PevU$`new:line`$Y)
+  PEV <- PEV[grep("new1", names(PEV))]
+  varG <- as.numeric(tmp.mod$sigma$`new:line`)
+  
+  tmp.BLUPs <- tmp.mod$U$`new:line`$Y[grep("new1", names(tmp.mod$U$`new:line`$Y))]
+  H2 <- rbind(H2, pin(tmp.mod, h2 ~ V2 / ( V2 + V4)))
+  BLUPs[,cmpd] <- tmp.BLUPs #blups
+  drBLUPs[,cmpd] <- tmp.BLUPs / (1 - PEV/varG)#deregressed blups checks will have NA
+  convInfo[cmpd] <- tmp.mod$convergence
+}
+
+colnames(BLUPs) <- colnames(drBLUPs) <- row.names(H2) <- colnames(LC)[LC.colIndx]
+Lines <- sub("new1:line", "", names(tmp.BLUPs))
+
+saveRDS(list(BLUPs = data.frame(line = Lines, BLUPs),
+             drBLUPs = data.frame(line = Lines, drBLUPs),
+             H2 = H2,
+             converged = convInfo),
+        "LC_BLUPs.rds")
+```
+
+
+## Check for batch effect in the BLUPs
+
+Function for PCA and plots
+```{r, echo = T, eval = F}
+PCAplot <- function(data = NULL, title = NULL, excludeChecks = NULL, excludeQCs = NULL){
+  #data should be formatted in the same way as the original/raw files from Trevor
+  require(ggplot2)
+  
+  
+  if(!is.null(excludeQCs) & excludeQCs == T){
+    data <- data[!grepl("QC", data$pmfname) ,]
+  }
+  
+  if(!is.null(excludeChecks) & excludeChecks == T){
+    data <- data[data$entryc %in% 999 ,]
+  }
+  
+  fullsampledata <- data[,!grepl("^[GL]C\\.", colnames(data))]
+  featuredata <- t(data[ ,grep("^[GL]C\\.", colnames(data))])
+  colnames(featuredata) <- as.character(data$pmfname)
+  
+  raw.pca <- prcomp(scale(t(featuredata), scale = T, center = T))
+  dataGG <- data.frame(batch = fullsampledata$batch, raw.pca$x)
+  
+  P1 <- ggplot(dataGG, aes(x=PC1, y=PC2, color = as.factor(batch))) + 
+    geom_point(pch = 19) +
+    xlab(paste0("PC1 (", round(100*raw.pca$sdev[1]^2/sum(raw.pca$sdev^2), digits=2), "%)")) +
+    ylab(paste0("PC2 (", round(100*raw.pca$sdev[2]^2/sum(raw.pca$sdev^2), digits=2), "%)")) +
+    scale_color_brewer(palette = "Spectral") +
+    #coord_fixed(ratio=1) +
+    scale_shape_manual(values=c(3,16)) +
+    scale_alpha_manual(values=c(0.5,1)) +
+    theme_classic() +
+    ggtitle(title) +
+    theme(legend.position = "right",
+          plot.background = element_blank(),
+          panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(), 
+          aspect.ratio = 1, 
+          legend.title = element_blank(), 
+          axis.text.x = element_text(colour = "black", size = 4), 
+          axis.text.y = element_text(colour = "black", size = 4),
+          legend.text = element_text(colour = "black", size = 4),
+          legend.key.size = unit(2, "line"),
+          axis.title = element_text(size = 7))
+  
+  
+  P2 <- ggplot(dataGG, aes(x=PC3, y=PC4, color = as.factor(batch))) + 
+    geom_point(pch = 19) +
+    xlab(paste0("PC3 (", round(100*raw.pca$sdev[3]^2/sum(raw.pca$sdev^2), digits=2), "%)")) +
+    ylab(paste0("PC4 (", round(100*raw.pca$sdev[4]^2/sum(raw.pca$sdev^2), digits=2), "%)")) +
+    scale_color_brewer(palette = "Spectral") +
+    #coord_fixed(ratio=1) +
+    scale_shape_manual(values=c(3,16)) +
+    scale_alpha_manual(values=c(0.5,1)) +
+    theme_classic() +
+    ggtitle(title) +
+    theme(legend.position = "right",
+          plot.background = element_blank(),
+          panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(), 
+          aspect.ratio = 1, 
+          legend.title = element_blank(), 
+          axis.text.x = element_text(colour = "black", size = 4), 
+          axis.text.y = element_text(colour = "black", size = 4),
+          legend.text = element_text(colour = "black", size = 4),
+          legend.key.size = unit(2, "line"),
+          axis.title = element_text(size = 7))
+  
+return(list(P1 = P1, P2 = P2))
+}
+```
+
+```{r, echo = T, eval = F}
+library(cowplot)
+
+rm(list = ls())
+
+#Raw data
+Dat <- readRDS("../FinalData.rds")
+GC.raw <- Dat$OutliersRemoved$GC
+LC.raw <- Dat$OutliersRemoved$LC
+
+#debugonce(PCAplot)
+origPCA_GC <- PCAplot(data = GC.raw, title = "original data", excludeChecks = T, excludeQCs = T)
+origPCA_LC <- PCAplot(data = LC.raw, title = "original data", excludeChecks = T, excludeQCs = T)
+
+###########
+## BLUPs ##
+###########
+
+## GC ##
+GC.BLUPs <- readRDS("../BLUPs/GC_BLUPs.rds")
+keeps <- row.names(GC.BLUPs$H2[GC.BLUPs$H2$Estimate != 0 ,])
+
+GC.BLUPs <- GC.BLUPs$drBLUPs[c("line", keeps)]
+
+GCmeta <- GC.raw[1:15]
+GCmeta <- GCmeta[GCmeta$entryc %in% 999 ,]
+GCmeta <- GCmeta[GCmeta$line %in% GC.BLUPs$line ,]
+GC.BLUPs <- GC.BLUPs[GC.BLUPs$line %in% GCmeta$line ,]
+GCmeta <- GCmeta[match(GC.BLUPs$line, GCmeta$line) ,]
+GC.BLUPs <- data.frame(GCmeta, GC.BLUPs[2:ncol(GC.BLUPs)])
+
+#debugonce(PCAplot)
+GCblupsPCA <- PCAplot(data = GC.BLUPs, title = "BLUPs", excludeChecks = T, excludeQCs = T)
+
+pdf("../BLUPs/GC_PCAblups.pdf", h = 8, w = 8)
+    print(plot_grid(origPCA_GC$P1, origPCA_GC$P2,
+                    GCblupsPCA$P1, GCblupsPCA$P2,
+                    nrow = 2, ncol = 2))
+dev.off()
+
+
+## LC ##
+LC.BLUPs <- readRDS("../BLUPs/LC_BLUPs.rds")
+keeps <- row.names(LC.BLUPs$H2[LC.BLUPs$H2$Estimate != 0 ,])
+
+LC.BLUPs <- LC.BLUPs$drBLUPs[c("line", keeps)]
+
+LCmeta <- LC.raw[1:15]
+LCmeta <- LCmeta[LCmeta$entryc %in% 999 ,]
+LCmeta <- LCmeta[LCmeta$line %in% LC.BLUPs$line ,]
+LC.BLUPs <- LC.BLUPs[LC.BLUPs$line %in% LCmeta$line ,]
+LCmeta <- LCmeta[match(LC.BLUPs$line, LCmeta$line) ,]
+LC.BLUPs <- data.frame(LCmeta, LC.BLUPs[2:ncol(LC.BLUPs)])
+
+#debugonce(PCAplot)
+LCblupsPCA <- PCAplot(data = LC.BLUPs, title = "BLUPs", excludeChecks = T, excludeQCs = T)
+
+pdf("../BLUPs/LC_PCAblups.pdf", h = 8, w = 8)
+    print(plot_grid(origPCA_LC$P1, origPCA_LC$P2,
+                    LCblupsPCA$P1, LCblupsPCA$P2,
+                    nrow = 2, ncol = 2))
+dev.off()
+```
+
+\begin{figure}
+\centering
+\includegraphics[width=6.5in]{BLUPs/GC_PCAblups.pdf}
+\captionsetup{width=6.5in}
+\caption{\textbf{PCA of original data and deregressed BLUPs for GC data}.}
+\label{BLUPpcaGC} % \label works only AFTER \caption within figure environment
+\end{figure}
+
+
+\begin{figure}
+\centering
+\includegraphics[width=6.5in]{BLUPs/LC_PCAblups.pdf}
+\captionsetup{width=6.5in}
+\caption{\textbf{PCA of original data and deregressed BLUPs for LC data}.}
+\label{BLUPpcaLC} % \label works only AFTER \caption within figure environment
+\end{figure}
