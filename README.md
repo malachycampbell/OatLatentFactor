@@ -11,31 +11,31 @@ This repo contains all the code used for the manuscript. The code is organized a
 
 ## Table of Contents 
 * **1. Preparation of Phenotypic Data**
-  - [html output](http://htmlpreview.github.io/?http://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section1.html)
+  - [html output]()
   - [.Rmd File](https://htmlpreview.github.io/?)
   
 * **2. Imputation of Genotypes**
-  - [html output](https://htmlpreview.github.io/?https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section1.html)
+  - [html output]()
   - [.Rmd File](https://htmlpreview.github.io/?)
   
 * **3. Large-scale metabolomics provides insight into natural variation in the chemical composition of oat seed**
-  - [html output](https://htmlpreview.github.io/?https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section3.html)
+  - [html output](https://htmlpreview.github.io/?https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section1.html)
   - [.Rmd File](https://htmlpreview.github.io/?)
   
 * **4. Latent factor model selection**
-  - [html output](https://htmlpreview.github.io/?https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section4.html)
+  - [html output](https://htmlpreview.github.io/?https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section2.html)
   - [.Rmd File](https://htmlpreview.github.io/?)
  
 * **5. Factor analysis reveals common biological features of the oat seed metabolome**
-  - [html output](https://htmlpreview.github.io/?)
+  - [html output](https://htmlpreview.github.io/?https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section3.html)
   - [.Rmd File]()
   
 * **6. Elucidating the genetic architecture of latent factors**
-  - [html output](https://htmlpreview.github.io/?)
+  - [html output](https://htmlpreview.github.io/?https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section4.html)
   - [.Rmd File]()
   
-* **6. Biologically-informed prediction of seed quality traits**
-  - [html output](https://htmlpreview.github.io/?)
+* **7. Biologically-informed prediction of seed quality traits**
+  - [html output](https://htmlpreview.github.io/?https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section5.html)
   - [.Rmd File]()
   
  ## Funding
