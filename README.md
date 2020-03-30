@@ -11,7 +11,7 @@ This repo contains all the code used for the manuscript. The code is organized a
 
 ## Table of Contents 
 * **1. Preparation of Phenotypic Data**
-  - [html output](https://htmlpreview.github.io/?https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section1.html)
+  - [html output](http://htmlpreview.github.io/?http://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section1.html)
   - [.Rmd File](https://htmlpreview.github.io/?)
   
 * **2. Imputation of Genotypes**
