@@ -1,0 +1,1581 @@
+---
+title: "Biologically-informed prediction of seed quality traits"
+author: "Malachy Campbell"
+date: "3/26/2020"
+output:
+  rmdformats::html_clean:
+    fig_width: 6
+    fig_height: 6
+    highlight: kate
+    thumbnails: true
+    lightbox: true
+    gallery: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      root.dir = "~/Documents/Dropbox/Work/Manuscripts/2020_OatLF/")
+```
+
+# Summary 
+This document provides all code that was used to perform prediction for seed quality traits.
+
+# Format phenotypes and markers
+
+## NIRs
+```{r, echo = T, eval = F}
+library(reshape2)
+
+rm(list = ls())
+
+# load markers
+mrks <- data.table::fread("flashr/metaFiles/genotypes/allMrks_imp_SNPs_genomat_73257x539.txt", sep = "\t", header = F)
+mrkNames <- read.table("flashr/metaFiles/genotypes/SNPnames_allMrks_imp_SNPs_genomat_73257x539.txt", header = F)
+mapData <- read.csv("flashr/metaFiles/genotypes/T_AHOY_OC3_Monkey.csv")
+
+mapData <- data.frame(marker = mapData$Locus, chr = mapData$Chr, pos = mapData$Dist)
+mapDataAnch <- mapData[mapData$marker %in% mrkNames$V1 ,]
+mapData <- rbind(mapDataAnch,
+                 data.frame(marker = mrkNames[! mrkNames$V1 %in% mapData$marker ,], 
+                            chr = "Unk", 
+                            pos = 1:length(mrkNames[! mrkNames$V1 %in% mapData$marker ,])))
+
+############################
+# Cleaning phenotypic data #
+############################
+# Load phenotypes for NIRs
+founders <- read.table("flashr/metaFiles/trials/download_OQVT_founders/traits.txt", header = T, sep = "\t")
+founders <- founders[, grep("NIR|line|trial", colnames(founders))]
+eliteLines <- read.csv("flashr/metaFiles/genotypes/elite_t3_names.csv")
+eliteLines <- eliteLines[eliteLines$t3_name %in% mrks$V1 ,]
+founders <- founders[founders$line %in% eliteLines$t3_name ,]
+length(unique(founders$trial)) #6
+length(unique(founders$line)) #210
+
+#esimate connectivity/concordance
+tt <- table(founders$line, founders$trial)
+tt <- tt > 0
+conc <- t(tt) %*% tt
+diag(conc) <- NA
+#remove trials where the max number of shared entries is <= 10
+trialIndx <- apply(conc, 2, max, na.rm = T)
+founders <- founders[founders$trial %in% names(trialIndx[trialIndx > 10]) ,]
+length(unique(founders$trial)) #6
+length(unique(founders$line)) #210
+
+founders$trial <- gsub("_", ".", founders$trial)
+
+########################
+# Cleaning marker data #
+########################
+mrks <- mrks[mrks$V1 %in% founders$line ,] #210 73258
+mrks <- as.data.frame(mrks)
+row.names(mrks) <- mrks$V1
+mrks$V1 <- NULL
+mrks <- as.matrix(mrks)
+mrks <- mrks + 1
+
+# filter based on MAF
+freq <- colMeans(mrks)/2
+maf <- ifelse(freq > 0.5, 1-freq, freq)
+mafIndx <- which(maf < 0.05)
+mrks <- mrks[,-mafIndx] # 210 58293
+mrkNames <- mrkNames[-mafIndx ,]
+colnames(mrks) <- mrkNames
+mapData <- mapData[mapData$marker %in% mrkNames ,]
+
+saveRDS(list(phenotypes = founders,
+             mrks = mrks,
+             map = mapData), "flashr/GP/InputData_founders.rds")
+```
+
+## Fatty acids
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+# load markers
+mrks <- data.table::fread("flashr/metaFiles/genotypes/allMrks_imp_SNPs_genomat_73257x539.txt", sep = "\t", header = F)
+mrkNames <- read.table("flashr/metaFiles/genotypes/SNPnames_allMrks_imp_SNPs_genomat_73257x539.txt", header = F)
+mapData <- read.csv("flashr/metaFiles/genotypes/T_AHOY_OC3_Monkey.csv")
+
+mapData <- data.frame(marker = mapData$Locus, chr = mapData$Chr, pos = mapData$Dist)
+mapDataAnch <- mapData[mapData$marker %in% mrkNames$V1 ,]
+mapData <- rbind(mapDataAnch,
+                 data.frame(marker = mrkNames[! mrkNames$V1 %in% mapData$marker ,], 
+                            chr = "Unk", 
+                            pos = 1:length(mrkNames[! mrkNames$V1 %in% mapData$marker ,])))
+
+############################
+# Cleaning phenotypic data #
+############################
+# Load phenotypes for NIRs
+FAs <- read.table("flashr/metaFiles/trials/download_XZXT/traits.txt", header = T, sep = "\t")
+FAs <- FAs[grep("CornellMetabolomics*", FAs$trial) ,]
+# lineNames <- unique(rbind(read.csv("../MTGWAS/elite_t3_names.csv"),
+#                           read.csv("diversity_t3_names.csv")[,2:3]))
+#lineNames <- lineNames[lineNames$t3_name %in% mrks$V1 ,]
+FAs <- FAs[FAs$line %in% mrks$V1 ,]
+length(unique(FAs$trial)) #2
+length(unique(FAs$line)) #338
+
+FAs$trial <- gsub("_", ".", FAs$trial)
+
+########################
+# Cleaning marker data #
+########################
+mrks <- mrks[mrks$V1 %in% FAs$line ,] #338 73258
+mrks <- as.data.frame(mrks)
+row.names(mrks) <- mrks$V1
+mrks$V1 <- NULL
+mrks <- as.matrix(mrks)
+mrks <- mrks + 1
+
+# filter based on MAF
+freq <- colMeans(mrks)/2
+maf <- ifelse(freq > 0.5, 1-freq, freq)
+mafIndx <- which(maf < 0.05)
+mrks <- mrks[,-mafIndx] # 210 61900
+mrkNames <- mrkNames[-mafIndx ,]
+colnames(mrks) <- mrkNames
+mapData <- mapData[mapData$marker %in% mrkNames ,]
+
+saveRDS(list(phenotypes = FAs,
+             mrks = mrks,
+             map = mapData), "flashr/GP/InputData_FAs.rds")
+```
+
+# Set-specific prediction
+## All categories/factors
+Here I run genomic prediction using any markers associated with a factor to define the biologically-informed kernel. Most of this code was run on the cluster so the paths may not be the same as above. See the directories AllMrks_across/LD0.5/ or lipidEnr_across/LD0.5/ for CV results.
+
+### NIRs
+```{r, echo = T, eval = F}
+library(BGLR)
+library(argparse)
+
+rm(list = ls())
+
+##
+parser <- ArgumentParser(description = "Does prediction")
+parser$add_argument("--arrayNo", dest="arrayNo", required=TRUE, help="Uses the array number to subset to set folds")
+args <- parser$parse_args()
+
+JobNo <- as.numeric(args$arrayNo)
+##
+
+InputData <- readRDS("InputData_founders.rds")
+GWASres <- readRDS("GWASres_LD_0.5.rds")
+
+mrksOfInt <- unique(unlist(GWASres))
+mrks <- InputData$mrks
+phenos <- InputData$phenotypes
+phenos$line <- droplevels(phenos$line)
+
+Ys <- scale(phenos[,4:5], center = T, scale = T)
+
+# Construct marker set-specific GRMs and GRM
+Zsc <- scale(mrks, center = T, scale = T)
+G <- tcrossprod(Zsc)/ncol(mrks)
+G <- G + diag(nrow(G))*0.0001
+
+mrksIn <- which(colnames(mrks) %in% mrksOfInt)
+Zsc <- scale(mrks[,mrksIn], center = T, scale = T)
+Gin <- tcrossprod(Zsc)/length(mrksIn)
+Gin <- Gin + diag(nrow(Gin))*0.0001
+
+Zsc <- scale(mrks[,-mrksIn], center = T, scale = T)
+Gout <- tcrossprod(Zsc)/(ncol(mrks) - length(mrksIn))
+Gout <- Gout + diag(nrow(Gout))*0.0001
+
+# Incidence matrices for lines and trials
+Zg <- model.matrix(~line-1, data = phenos)
+Zg <- Zg[,match(colnames(G), sub("line", "", colnames(Zg)))]
+Ze <- model.matrix(~trial-1, data = phenos)
+
+# Prediction kernels for multikernel
+ETA <- list()
+gKernel_in <- Zg %*% Gin %*% t(Zg)
+gKernel_out <- Zg %*% Gout %*% t(Zg)
+envKernel <- Ze %*% t(Ze)
+
+ETA[[1]] <- list(K = gKernel_in, model = "RKHS")
+ETA[[2]] <- list(K = gKernel_out, model = "RKHS")
+ETA[[3]] <- list(K = envKernel, model = "RKHS")
+
+# Prediction kernels for gBLUP
+ETAgBLUP <- list()
+gKernel <- Zg %*% G %*% t(Zg)
+envKernel <- Ze %*% t(Ze)
+
+ETAgBLUP[[1]] <- list(K = gKernel, model = "RKHS")
+ETAgBLUP[[2]] <- list(K = envKernel, model = "RKHS")
+
+# Set up folds
+Lines <- unique(phenos$line)
+fldIndx <- rep(c(1:5), each = length(Lines)/5)
+set.seed(12856392 + JobNo)
+fldIndx <- fldIndx[sample(1:length(fldIndx))]
+
+corMat <- matrix(NA, ncol = 4, nrow = 5)
+for(fold in 1:5){
+  trnLines <- Lines[which(fldIndx != fold)]
+  Ytrn <- Ys
+  Ytrn[! phenos$line %in% trnLines ,] <- NA
+  
+  ################
+  ################
+  # Set-specific #
+  ################
+  ################
+  
+  ###############
+  # Protein NIR #
+  ###############
+  fm <- BGLR::BGLR(y = Ytrn[,1], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/ProteinNIR_", JobNo))
+  
+  corMat[fold, 1] <- cor(Ys[!phenos$line %in% trnLines ,][,1], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  #0.5524765
+  
+  #############
+  # Lipid NIR #
+  #############
+  fm <- BGLR::BGLR(y = Ytrn[,2], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/LipidNIR_", JobNo))
+  
+  corMat[fold, 2] <- cor(Ys[!phenos$line %in% trnLines ,][,2], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  
+  
+  
+  #########
+  #########
+  # gBLUP #
+  #########
+  #########
+  
+  ###############
+  # Protein NIR #
+  ###############
+  fm <- BGLR::BGLR(y = Ytrn[,1], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/gBLUP_ProteinNIR_", JobNo))
+  
+  corMat[fold, 3] <- cor(Ys[!phenos$line %in% trnLines ,][,1], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  
+  #############
+  # Lipid NIR #
+  #############
+  fm <- BGLR::BGLR(y = Ytrn[,2], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/gBLUP_LipidNIR_", JobNo))
+  
+  corMat[fold, 4] <- cor(Ys[!phenos$line %in% trnLines ,][,2], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+}
+
+
+saveRDS(corMat, paste0("AllMrks_across/LD0.5/NIR_", JobNo, ".rds"))
+```
+
+### FAs
+```{r, echo = T, eval = F}
+library(BGLR)
+library(argparse)
+
+rm(list = ls())
+
+##
+parser <- ArgumentParser(description = "Does prediction")
+parser$add_argument("--arrayNo", dest="arrayNo", required=TRUE, help="Uses the array number to subset to set folds")
+args <- parser$parse_args()
+
+JobNo <- as.numeric(args$arrayNo)
+##
+
+InputData <- readRDS("InputData_FAs.rds")
+GWASres <- readRDS("GWASres_LD_0.5.rds")
+
+mrksOfInt <- unique(unlist(GWASres))
+mrks <- InputData$mrks
+mrks <- mrks[order(row.names(mrks)) ,]
+phenos <- InputData$phenotypes
+phenos$line <- droplevels(phenos$line)
+phenos <- phenos[order(phenos$trial, phenos$line) ,]
+
+Ys <- scale(phenos[grep("fatty", colnames(phenos))], center = T, scale = T)
+
+# Construct marker set-specific GRMs and GRM
+Zsc <- scale(mrks, center = T, scale = T)
+G <- tcrossprod(Zsc)/ncol(mrks)
+G <- G + diag(nrow(G))*0.0001
+
+mrksIn <- which(colnames(mrks) %in% mrksOfInt)
+Zsc <- scale(mrks[,mrksIn], center = T, scale = T)
+Gin <- tcrossprod(Zsc)/length(mrksIn)
+Gin <- Gin + diag(nrow(Gin))*0.0001
+
+Zsc <- scale(mrks[,-mrksIn], center = T, scale = T)
+Gout <- tcrossprod(Zsc)/(ncol(mrks) - length(mrksIn))
+Gout <- Gout + diag(nrow(Gout))*0.0001
+
+# Incidence matrices for lines and trials
+Zg <- model.matrix(~line-1, data = phenos)
+Ze <- model.matrix(~trial-1, data = phenos)
+
+sum(colnames(G) == sub("line", "", colnames(Zg)))
+sum(colnames(Gin) == sub("line", "", colnames(Zg)))
+sum(colnames(Gout) == sub("line", "", colnames(Zg)))
+
+# Prediction kernels for multikernel
+ETA <- list()
+gKernel_in <- Zg %*% Gin %*% t(Zg)
+gKernel_out <- Zg %*% Gout %*% t(Zg)
+envKernel <- Ze %*% t(Ze)
+
+ETA[[1]] <- list(K = gKernel_in, model = "RKHS")
+ETA[[2]] <- list(K = gKernel_out, model = "RKHS")
+ETA[[3]] <- list(K = envKernel, model = "RKHS")
+
+# Prediction kernels for gBLUP
+ETAgBLUP <- list()
+gKernel <- Zg %*% G %*% t(Zg)
+envKernel <- Ze %*% t(Ze)
+
+ETAgBLUP[[1]] <- list(K = gKernel, model = "RKHS")
+ETAgBLUP[[2]] <- list(K = envKernel, model = "RKHS")
+
+# Set up folds
+Lines <- unique(phenos$line)
+fldIndx <- rep(c(1:5), each = ceiling(length(Lines)/5))
+set.seed(12856392 + JobNo)
+fldIndx <- fldIndx[sample(1:length(fldIndx))]
+
+corMat <- matrix(NA, ncol = ncol(Ys)*2, nrow = 5)
+for(fold in 1:5){
+  trnLines <- Lines[which(fldIndx != fold)]
+  Ytrn <- Ys
+  Ytrn[! phenos$line %in% trnLines ,] <- NA
+  
+  ################
+  ################
+  # Set-specific #
+  ################
+  ################
+  
+  ####################
+  # fatty.acid.C14.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,1], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 1] <- cor(Ys[!phenos$line %in% trnLines ,][,1], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  #0.5524765
+  
+  ####################
+  # fatty.acid.C16.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,2], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 2] <- cor(Ys[!phenos$line %in% trnLines ,][,2], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C16.1 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,3], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 3] <- cor(Ys[!phenos$line %in% trnLines ,][,3], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+
+  ####################
+  # fatty.acid.C18.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,4], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 4] <- cor(Ys[!phenos$line %in% trnLines ,][,4], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  #0.5524765
+  
+  ######################
+  # fatty.acid.C18.1.9 #
+  ######################
+  fm <- BGLR::BGLR(y = Ytrn[,5], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 5] <- cor(Ys[!phenos$line %in% trnLines ,][,5], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C18.1 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,6], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 6] <- cor(Ys[!phenos$line %in% trnLines ,][,6], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C18.2 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,7], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 7] <- cor(Ys[!phenos$line %in% trnLines ,][,7], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  #0.5524765
+  
+  ####################
+  # fatty.acid.C18.3 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,8], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 8] <- cor(Ys[!phenos$line %in% trnLines ,][,8], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C19.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,9], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 9] <- cor(Ys[!phenos$line %in% trnLines ,][,9], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C20.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,10], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 10] <- cor(Ys[!phenos$line %in% trnLines ,][,10], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C20.1 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,11], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 11] <- cor(Ys[!phenos$line %in% trnLines ,][,11], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  
+  
+  #########
+  #########
+  # gBLUP #
+  #########
+  #########
+  
+  ####################
+  # fatty.acid.C14.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,1], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 12] <- cor(Ys[!phenos$line %in% trnLines ,][,1], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  #0.5524765
+  
+  ####################
+  # fatty.acid.C16.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,2], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 13] <- cor(Ys[!phenos$line %in% trnLines ,][,2], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C16.1 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,3], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 14] <- cor(Ys[!phenos$line %in% trnLines ,][,3], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+
+  ####################
+  # fatty.acid.C18.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,4], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 15] <- cor(Ys[!phenos$line %in% trnLines ,][,4], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  #0.5524765
+  
+  ######################
+  # fatty.acid.C18.1.9 #
+  ######################
+  fm <- BGLR::BGLR(y = Ytrn[,5], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 16] <- cor(Ys[!phenos$line %in% trnLines ,][,5], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C18.1 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,6], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 17] <- cor(Ys[!phenos$line %in% trnLines ,][,6], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C18.2 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,7], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 18] <- cor(Ys[!phenos$line %in% trnLines ,][,7], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  #0.5524765
+  
+  ####################
+  # fatty.acid.C18.3 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,8], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 19] <- cor(Ys[!phenos$line %in% trnLines ,][,8], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C19.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,9], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 20] <- cor(Ys[!phenos$line %in% trnLines ,][,9], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C20.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,10], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 21] <- cor(Ys[!phenos$line %in% trnLines ,][,10], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C20.1 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,11], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("AllMrks_across/LD0.5/", JobNo))
+  
+  corMat[fold, 22] <- cor(Ys[!phenos$line %in% trnLines ,][,11], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+}
+
+
+saveRDS(corMat, paste0("AllMrks_across/LD0.5/FA_", JobNo, ".rds"))
+```
+
+## Lipid-enriched factors
+
+### NIRs
+```{r, echo = T, eval = F}
+library(BGLR)
+library(argparse)
+
+rm(list = ls())
+
+##
+parser <- ArgumentParser(description = "Does prediction")
+parser$add_argument("--arrayNo", dest="arrayNo", required=TRUE, help="Uses the array number to subset to set folds")
+args <- parser$parse_args()
+
+JobNo <- as.numeric(args$arrayNo)
+##
+
+InputData <- readRDS("InputData_founders.rds")
+GWASres <- readRDS("GWASres_LD_0.5.rds")
+#Factors enriched in lipid and lipid-like molecules
+enrichedFacts <- c("Factor_1", "Factor_3", "Factor_4", "Factor_5", "Factor_6", 
+                   "Factor_9", "Factor_12", "Factor_14", "Factor_16", "Factor_17",
+                   "Factor_18", "Factor_20", "Factor_29", "Factor_31", "Factor_33", 
+                   "Factor_34", "Factor_44", "Factor_48", "Factor_80", "Factor_96", 
+                   "Factor_97") #not all these factors have GWAS hits
+GWASres <- GWASres[names(GWASres) %in% enrichedFacts]
+
+mrksOfInt <- unique(unlist(GWASres))
+mrks <- InputData$mrks
+phenos <- InputData$phenotypes
+phenos$line <- droplevels(phenos$line)
+
+Ys <- scale(phenos[,4:5], center = T, scale = T)
+
+# Construct marker set-specific GRMs and GRM
+Zsc <- scale(mrks, center = T, scale = T)
+G <- tcrossprod(Zsc)/ncol(mrks)
+G <- G + diag(nrow(G))*0.0001
+
+mrksIn <- which(colnames(mrks) %in% mrksOfInt)
+Zsc <- scale(mrks[,mrksIn], center = T, scale = T)
+Gin <- tcrossprod(Zsc)/length(mrksIn)
+Gin <- Gin + diag(nrow(Gin))*0.0001
+
+Zsc <- scale(mrks[,-mrksIn], center = T, scale = T)
+Gout <- tcrossprod(Zsc)/(ncol(mrks) - length(mrksIn))
+Gout <- Gout + diag(nrow(Gout))*0.0001
+
+# Incidence matrices for lines and trials
+Zg <- model.matrix(~line-1, data = phenos)
+Zg <- Zg[,match(colnames(G), sub("line", "", colnames(Zg)))]
+Ze <- model.matrix(~trial-1, data = phenos)
+
+# Prediction kernels for multikernel
+ETA <- list()
+gKernel_in <- Zg %*% Gin %*% t(Zg)
+gKernel_out <- Zg %*% Gout %*% t(Zg)
+envKernel <- Ze %*% t(Ze)
+
+ETA[[1]] <- list(K = gKernel_in, model = "RKHS")
+ETA[[2]] <- list(K = gKernel_out, model = "RKHS")
+ETA[[3]] <- list(K = envKernel, model = "RKHS")
+
+# Prediction kernels for gBLUP
+ETAgBLUP <- list()
+gKernel <- Zg %*% G %*% t(Zg)
+envKernel <- Ze %*% t(Ze)
+
+ETAgBLUP[[1]] <- list(K = gKernel, model = "RKHS")
+ETAgBLUP[[2]] <- list(K = envKernel, model = "RKHS")
+
+# Set up folds
+Lines <- unique(phenos$line)
+fldIndx <- rep(c(1:5), each = length(Lines)/5)
+set.seed(12856392 + JobNo)
+fldIndx <- fldIndx[sample(1:length(fldIndx))]
+
+corMat <- matrix(NA, ncol = 4, nrow = 5)
+for(fold in 1:5){
+  trnLines <- Lines[which(fldIndx != fold)]
+  Ytrn <- Ys
+  Ytrn[! phenos$line %in% trnLines ,] <- NA
+  
+  ################
+  ################
+  # Set-specific #
+  ################
+  ################
+  
+  ###############
+  # Protein NIR #
+  ###############
+  fm <- BGLR::BGLR(y = Ytrn[,1], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/ProteinNIR_", JobNo))
+  
+  corMat[fold, 1] <- cor(Ys[!phenos$line %in% trnLines ,][,1], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  
+  #############
+  # Lipid NIR #
+  #############
+  fm <- BGLR::BGLR(y = Ytrn[,2], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/LipidNIR_", JobNo))
+  
+  corMat[fold, 2] <- cor(Ys[!phenos$line %in% trnLines ,][,2], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  
+  
+  
+  #########
+  #########
+  # gBLUP #
+  #########
+  #########
+  
+  ###############
+  # Protein NIR #
+  ###############
+  fm <- BGLR::BGLR(y = Ytrn[,1], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/gBLUP_ProteinNIR_", JobNo))
+  
+  corMat[fold, 3] <- cor(Ys[!phenos$line %in% trnLines ,][,1], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  
+  #############
+  # Lipid NIR #
+  #############
+  fm <- BGLR::BGLR(y = Ytrn[,2], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/gBLUP_LipidNIR_", JobNo))
+  
+  corMat[fold, 4] <- cor(Ys[!phenos$line %in% trnLines ,][,1], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+}
+
+
+saveRDS(corMat, paste0("lipidEnr_across/LD0.5/NIR_", JobNo, ".rds"))
+```
+
+
+### FAs
+```{r, echo = T, eval = F}
+library(BGLR)
+library(argparse)
+
+rm(list = ls())
+
+##
+parser <- ArgumentParser(description = "Does prediction")
+parser$add_argument("--arrayNo", dest="arrayNo", required=TRUE, help="Uses the array number to subset to set folds")
+args <- parser$parse_args()
+
+JobNo <- as.numeric(args$arrayNo)
+##
+
+InputData <- readRDS("InputData_FAs.rds")
+GWASres <- readRDS("GWASres_LD_0.5.rds")
+
+#Factors enriched in lipid and lipid-like molecules
+enrichedFacts <- c("Factor_1", "Factor_3", "Factor_4", "Factor_5", "Factor_6", 
+                   "Factor_9", "Factor_12", "Factor_14", "Factor_16", "Factor_17",
+                   "Factor_18", "Factor_20", "Factor_29", "Factor_31", "Factor_33", 
+                   "Factor_34", "Factor_44", "Factor_48", "Factor_80", "Factor_96", 
+                   "Factor_97")
+GWASres <- GWASres[names(GWASres) %in% enrichedFacts]
+
+mrksOfInt <- unique(unlist(GWASres))
+mrks <- InputData$mrks
+mrks <- mrks[order(row.names(mrks)) ,]
+phenos <- InputData$phenotypes
+phenos$line <- droplevels(phenos$line)
+phenos <- phenos[order(phenos$trial, phenos$line) ,]
+
+Ys <- scale(phenos[grep("fatty", colnames(phenos))], center = T, scale = T)
+
+# Construct marker set-specific GRMs and GRM
+Zsc <- scale(mrks, center = T, scale = T)
+G <- tcrossprod(Zsc)/ncol(mrks)
+G <- G + diag(nrow(G))*0.0001
+
+mrksIn <- which(colnames(mrks) %in% mrksOfInt)
+Zsc <- scale(mrks[,mrksIn], center = T, scale = T)
+Gin <- tcrossprod(Zsc)/length(mrksIn)
+Gin <- Gin + diag(nrow(Gin))*0.0001
+
+Zsc <- scale(mrks[,-mrksIn], center = T, scale = T)
+Gout <- tcrossprod(Zsc)/(ncol(mrks) - length(mrksIn))
+Gout <- Gout + diag(nrow(Gout))*0.0001
+
+# Incidence matrices for lines and trials
+Zg <- model.matrix(~line-1, data = phenos)
+Ze <- model.matrix(~trial-1, data = phenos)
+
+sum(colnames(G) == sub("line", "", colnames(Zg)))
+sum(colnames(Gin) == sub("line", "", colnames(Zg)))
+sum(colnames(Gout) == sub("line", "", colnames(Zg)))
+
+# Prediction kernels for multikernel
+ETA <- list()
+gKernel_in <- Zg %*% Gin %*% t(Zg)
+gKernel_out <- Zg %*% Gout %*% t(Zg)
+envKernel <- Ze %*% t(Ze)
+
+ETA[[1]] <- list(K = gKernel_in, model = "RKHS")
+ETA[[2]] <- list(K = gKernel_out, model = "RKHS")
+ETA[[3]] <- list(K = envKernel, model = "RKHS")
+
+# Prediction kernels for gBLUP
+ETAgBLUP <- list()
+gKernel <- Zg %*% G %*% t(Zg)
+envKernel <- Ze %*% t(Ze)
+
+ETAgBLUP[[1]] <- list(K = gKernel, model = "RKHS")
+ETAgBLUP[[2]] <- list(K = envKernel, model = "RKHS")
+
+# Set up folds
+Lines <- unique(phenos$line)
+fldIndx <- rep(c(1:5), each = ceiling(length(Lines)/5))
+set.seed(12856392 + JobNo)
+fldIndx <- fldIndx[sample(1:length(fldIndx))]
+
+corMat <- matrix(NA, ncol = ncol(Ys)*2, nrow = 5)
+for(fold in 1:5){
+  trnLines <- Lines[which(fldIndx != fold)]
+  Ytrn <- Ys
+  Ytrn[! phenos$line %in% trnLines ,] <- NA
+  
+  ################
+  ################
+  # Set-specific #
+  ################
+  ################
+  
+  ####################
+  # fatty.acid.C14.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,1], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 1] <- cor(Ys[!phenos$line %in% trnLines ,][,1], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  #0.5524765
+  
+  ####################
+  # fatty.acid.C16.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,2], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 2] <- cor(Ys[!phenos$line %in% trnLines ,][,2], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C16.1 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,3], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 3] <- cor(Ys[!phenos$line %in% trnLines ,][,3], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+
+  ####################
+  # fatty.acid.C18.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,4], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 4] <- cor(Ys[!phenos$line %in% trnLines ,][,4], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  #0.5524765
+  
+  ######################
+  # fatty.acid.C18.1.9 #
+  ######################
+  fm <- BGLR::BGLR(y = Ytrn[,5], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 5] <- cor(Ys[!phenos$line %in% trnLines ,][,5], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C18.1 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,6], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 6] <- cor(Ys[!phenos$line %in% trnLines ,][,6], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C18.2 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,7], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 7] <- cor(Ys[!phenos$line %in% trnLines ,][,7], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  #0.5524765
+  
+  ####################
+  # fatty.acid.C18.3 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,8], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 8] <- cor(Ys[!phenos$line %in% trnLines ,][,8], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C19.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,9], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 9] <- cor(Ys[!phenos$line %in% trnLines ,][,9], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C20.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,10], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 10] <- cor(Ys[!phenos$line %in% trnLines ,][,10], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C20.1 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,11], ETA = ETA, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 11] <- cor(Ys[!phenos$line %in% trnLines ,][,11], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines] + 
+                            fm$ETA[[2]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  
+  
+  #########
+  #########
+  # gBLUP #
+  #########
+  #########
+  
+  ####################
+  # fatty.acid.C14.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,1], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 12] <- cor(Ys[!phenos$line %in% trnLines ,][,1], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  #0.5524765
+  
+  ####################
+  # fatty.acid.C16.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,2], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 13] <- cor(Ys[!phenos$line %in% trnLines ,][,2], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C16.1 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,3], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 14] <- cor(Ys[!phenos$line %in% trnLines ,][,3], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+
+  ####################
+  # fatty.acid.C18.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,4], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 15] <- cor(Ys[!phenos$line %in% trnLines ,][,4], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  #0.5524765
+  
+  ######################
+  # fatty.acid.C18.1.9 #
+  ######################
+  fm <- BGLR::BGLR(y = Ytrn[,5], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 16] <- cor(Ys[!phenos$line %in% trnLines ,][,5], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C18.1 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,6], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 17] <- cor(Ys[!phenos$line %in% trnLines ,][,6], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C18.2 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,7], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 18] <- cor(Ys[!phenos$line %in% trnLines ,][,7], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  #0.5524765
+  
+  ####################
+  # fatty.acid.C18.3 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,8], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 19] <- cor(Ys[!phenos$line %in% trnLines ,][,8], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C19.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,9], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 20] <- cor(Ys[!phenos$line %in% trnLines ,][,9], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C20.0 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,10], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 21] <- cor(Ys[!phenos$line %in% trnLines ,][,10], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+  
+  ####################
+  # fatty.acid.C20.1 #
+  ####################
+  fm <- BGLR::BGLR(y = Ytrn[,11], ETA = ETAgBLUP, nIter = 20000, burnIn = 5000, thin = 5,
+                   saveAt = paste0("lipidEnr_across/LD0.5/", JobNo))
+  
+  corMat[fold, 22] <- cor(Ys[!phenos$line %in% trnLines ,][,11], 
+                         (fm$ETA[[1]]$u[!phenos$line %in% trnLines]), 
+                         use = "complete.obs")
+}
+
+
+saveRDS(corMat, paste0("lipidEnr_across/LD0.5/FA_", JobNo, ".rds"))
+```
+
+# Summarize results
+Compile CV results for NIRs. Percent change.
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+###############
+###############
+# All Markers #
+###############
+###############
+
+perChange <- function(NoCols = NULL, data = NULL){
+  return(((data[,1:(NoCols/2)] - data[,((NoCols/2) + 1):(NoCols)]) / data[,((NoCols/2) + 1):(NoCols)]) * 100)
+}
+
+###########
+# LD 0.50 #
+###########
+
+CVfiles <- list.files(path = "flashr/GP/AllMrks_across/LD0.5/", pattern = "^NIR_*", full.names = T)
+
+CVres <- NULL
+for(i in CVfiles){
+  tmp <- readRDS(i)
+  CVres <- rbind(CVres,
+                 colMeans(perChange(NoCols = ncol(tmp), data = tmp)))
+}
+CVres_all0.5 <- data.frame(Trait = rep(c("Prot", "Lipid"), each = 50),
+                    Mrks = "all",
+                    LD = 0.5,
+                    r = c(CVres))
+
+
+#################
+#################
+# Lipid Enrich. #
+#################
+#################
+
+###########
+# LD 0.50 #
+###########
+
+CVfiles <- list.files(path = "flashr/GP/lipidEnr_across/LD0.5/", full.names = T, pattern = "^NIR_*")
+
+CVres <- NULL
+for(i in CVfiles){
+  tmp <- readRDS(i)
+  CVres <- rbind(CVres,
+                 colMeans(perChange(NoCols = ncol(tmp), data = tmp)))
+}
+CVres_lip0.5 <- data.frame(Trait = rep(c("Prot", "Lipid"), each = 50),
+                    Mrks = "lipidEnr",
+                    LD = 0.5,
+                    r = c(CVres))
+
+
+CVres_percent <- rbind(CVres_all0.5, CVres_lip0.5)
+
+# Proportion of runs > 0
+xtable::xtable(ddply(CVres_percent, .(Trait, Mrks), summarise, PropZero = sum(r > 0)/length(r)))
+# % latex table generated in R 3.6.1 by xtable 1.8-4 package
+# % Thu Mar 19 09:28:29 2020
+# \begin{table}[ht]
+# \centering
+# \begin{tabular}{rllr}
+#   \hline
+#  & Trait & Mrks & PropZero \\ 
+#   \hline
+#   1 & Lipid & all & 0.26 \\ 
+#   2 & Lipid & lipidEnr & 1.00 \\ %sig
+#   3 & Prot & all & 0.28 \\ 
+#   4 & Prot & lipidEnr & 0.86 \\ 
+#    \hline
+# \end{tabular}
+# \end{table}
+```
+
+Correlation
+```{r, echo = T, eval = F}
+###############
+###############
+# All Markers #
+###############
+###############
+
+###########
+# LD 0.50 #
+###########
+
+CVfiles <- list.files(path = "flashr/GP/AllMrks_across/LD0.5/", full.names = T, pattern = "^NIR*")
+
+CVres <- NULL
+for(i in CVfiles){
+  CVres <- rbind(CVres,
+                 colMeans(readRDS(i)))
+}
+CVres_all0.5 <- data.frame(Trait = c(rep(c("Prot", "Lipid"), each = 50),
+                              rep(c("Prot", "Lipid"), each = 50)), 
+                    Method = rep(c("MK", "gBLUP"), each = 100),
+                    Mrks = "all",
+                    LD = 0.5,
+                    r = c(CVres))
+
+#################
+#################
+# Lipid Enrich. #
+#################
+#################
+
+###########
+# LD 0.50 #
+###########
+
+CVfiles <- list.files(path = "flashr/GP/lipidEnr_across/LD0.5/", full.names = T, pattern = "^NIR*")
+
+CVres <- NULL
+for(i in CVfiles){
+  CVres <- rbind(CVres,
+                 colMeans(readRDS(i)))
+}
+CVres_lip0.5 <- data.frame(Trait = c(rep(c("Prot", "Lipid"), each = 50),
+                              rep(c("Prot", "Lipid"), each = 50)), 
+                    Method = rep(c("MK", "gBLUP"), each = 100),
+                    Mrks = "lipidEnr",
+                    LD = 0.5,
+                    r = c(CVres))
+
+CVres_lip0.5 <- CVres_lip0.5[! CVres_lip0.5$Method %in% "gBLUP" ,]
+CVres_lip0.5$Method <-droplevels(CVres_lip0.5$Method)
+
+CVres_r <- rbind(CVres_all0.5, CVres_lip0.5)
+```
+
+Two panel, side-by-side boxplot
+```{r, echo = T, eval = F}
+pdf("Figs/PredictionAccuracy_NIR.pdf", w = 4.2, h = 2.2)
+nf <- layout(rbind(c(1,1,1,2,2), c(1,1,1,2,2)))
+par(mar = c(3, 3.5, 1.5, 1.5), mgp=c(2.5,1,0), xpd = T)
+
+# Correlation
+boxplot(r ~ interaction(Method, Mrks, Trait, drop = T), CVres_r, las = 2, cex.axis = 0.75,
+        xlab = "", cex = 0.5, xaxt = "n", ylab = expression(italic(r)),
+        at = c(1,2,3, 6,7,8), col = rep(wesanderson::wes_palette("Darjeeling2")[1:3], 2), 
+        medlwd = 1.25)
+# axis(1, at = c(1.5, 4.5, 8.5, 11.5), labels = rep(c("All \n Fact.", "Lipid- \n enr."), 2), 
+#      las = 1, cex.axis = 0.75, font = 1)
+
+segments(x0 = 1, x1 = 3, y0 = (min(CVres_r$r) - (max(CVres_r$r)-min(CVres_r$r))*0.075),
+         y1 = (min(CVres_r$r) - (max(CVres_r$r)-min(CVres_r$r))*0.075), lty = 1, lwd = 2)
+segments(x0 = 6, x1 = 8, y0 = (min(CVres_r$r) - (max(CVres_r$r)-min(CVres_r$r))*0.075),
+         y1 = (min(CVres_r$r) - (max(CVres_r$r)-min(CVres_r$r))*0.075), lty = 1, lwd = 2)
+text(x = 2, y = (min(CVres_r$r) - (max(CVres_r$r)-min(CVres_r$r))*0.15), labels = "Lipid content", cex = 1)
+text(x = 7, y = (min(CVres_r$r) - (max(CVres_r$r)-min(CVres_r$r))*0.15), labels = "Protein content", cex = 1)
+
+legend("topright", legend = c("gBLUP", "MK-all", "MK-lip"), 
+       fill = wesanderson::wes_palette("Darjeeling2")[1:3], bty = "n", cex = 0.75)
+
+mtext("A", 2,  adj=4.5, las=1, padj=-9, font=1, cex=0.8)
+
+
+
+par(mar = c(3, 3, 1.5, 1.5), mgp=c(2.0,1,0), xpd = T)
+#Percent Change
+boxplot(r ~ Mrks*Trait, CVres_percent, las = 2, cex.axis = 0.75,
+        xlab = "", cex = 0.5, xaxt = "n", ylab = expression("% diff."),
+        at = c(1,2,5,6), col = rep(wesanderson::wes_palette("Moonrise3")[c(3,5)], 2), 
+        medlwd = 1.25)
+axis(1, at = c(1.5, 5.5), #labels = c("All \n Fact.", "Lipid- \n enr."), 
+     las = 1, cex.axis = 0.75, font = 1, labels = NA)
+
+# segments(x0 = 0.5, x1 = 2.5, y0 = (min(CVres_percent$r) - (max(CVres_percent$r)-min(CVres_percent$r))*0.3),
+#          y1 = (min(CVres_percent$r) - (max(CVres_percent$r)-min(CVres_percent$r))*0.3), lty = 1, lwd = 2)
+# segments(x0 = 4.5, x1 = 6.5, y0 = (min(CVres_percent$r) - (max(CVres_percent$r)-min(CVres_percent$r))*0.3),
+#          y1 = (min(CVres_percent$r) - (max(CVres_percent$r)-min(CVres_percent$r))*0.3), lty = 1, lwd = 2)
+text(x = 1.5, y = (min(CVres_percent$r) - (max(CVres_percent$r)-min(CVres_percent$r))*0.175), labels = "Lipid\n content", cex = 1)
+text(x = 5.5, y = (min(CVres_percent$r) - (max(CVres_percent$r)-min(CVres_percent$r))*0.175), labels = "Protein\n content", cex = 1)
+
+legend("topright", legend = c("All. Fact", "Lipid-enr."), 
+       fill = wesanderson::wes_palette("Moonrise3")[c(3,5)], bty = "n", cex = 0.75)
+
+mtext("B", 2,  adj=4, las=1, padj=-9, font=1, cex=0.8)
+
+dev.off()
+```
+
+### FAs
+Percent
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+InputData <- readRDS("flashr/GP/InputData_FAs.rds")
+phenos <- InputData$phenotypes
+phenos <- phenos[grep("fatty", colnames(phenos))]
+traits <- sub("fatty.acid.", "", colnames(phenos))
+
+###############
+###############
+# All Markers #
+###############
+###############
+
+perChange <- function(NoCols = NULL, data = NULL){
+  return(((data[,1:(NoCols/2)] - data[,((NoCols/2) + 1):(NoCols)]) / data[,((NoCols/2) + 1):(NoCols)]) * 100)
+}
+
+###########
+# LD 0.50 #
+###########
+
+CVfiles <- list.files(path = "flashr/GP/AllMrks_across/LD0.5/", 
+                      pattern = "^FA_", full.names = T)
+
+CVres <- NULL
+for(i in CVfiles){
+  tmp <- readRDS(i)
+  CVres <- rbind(CVres,
+                 colMeans(perChange(NoCols = ncol(tmp), data = tmp)))
+}
+
+CVres_all0.5 <- data.frame(Trait = rep(traits, each = 50),
+                    Mrks = "all",
+                    LD = 0.5,
+                    r = c(CVres))
+
+
+#################
+#################
+# Lipid Enrich. #
+#################
+#################
+
+###########
+# LD 0.50 #
+###########
+
+CVfiles <- list.files(path = "flashr/GP/lipidEnr_across/LD0.5/", 
+                      full.names = T, pattern = "^FA_")
+
+CVres <- NULL
+for(i in CVfiles){
+  tmp <- readRDS(i)
+  CVres <- rbind(CVres,
+                 colMeans(perChange(NoCols = ncol(tmp), data = tmp)))
+}
+CVres_lip0.5 <- data.frame(Trait = rep(traits, each = 50),
+                    Mrks = "lipidEnr",
+                    LD = 0.5,
+                    r = c(CVres))
+
+
+CVres_percent <- rbind(CVres_all0.5, CVres_lip0.5)
+
+# Proportion of runs > 0
+xtable::xtable(ddply(CVres_percent, .(Trait, Mrks), summarise, PropZero = sum(r > 0)/length(r)))
+# % latex table generated in R 3.6.1 by xtable 1.8-4 package
+# % Thu Mar 19 09:53:52 2020
+# \begin{table}[ht]
+# \centering
+# \begin{tabular}{rllr}
+#   \hline
+#  & Trait & Mrks & PropZero \\ 
+#   \hline
+#   1 & C14.0 & all & 0.78 \\ 
+#   2 & C14.0 & lipidEnr & 1.00 \\      sig
+#   3 & C16.0 & all & 0.58 \\ 
+#   4 & C16.0 & lipidEnr & 1.00 \\      sig
+#   5 & C16.1 & all & 0.38 \\ 
+#   6 & C16.1 & lipidEnr & 1.00 \\      sig
+#   7 & C18.0 & all & 0.50 \\ 
+#   8 & C18.0 & lipidEnr & 0.82 \\
+#   9 & C18.1. & all & 0.26 \\ 
+#   10 & C18.1. & lipidEnr & 0.98 \\    sig
+#   11 & C18.1.9. & all & 0.62 \\ 
+#   12 & C18.1.9. & lipidEnr & 1.00 \\  sig
+#   13 & C18.2 & all & 0.48 \\ 
+#   14 & C18.2 & lipidEnr & 1.00 \\     sig
+#   15 & C18.3 & all & 0.96 \\          sig
+#   16 & C18.3 & lipidEnr & 1.00 \\     sig
+#   17 & C19.0 & all & 0.84 \\ 
+#   18 & C19.0 & lipidEnr & 0.98 \\     sig
+#   19 & C20.0 & all & 0.04 \\ 
+#   20 & C20.0 & lipidEnr & 0.46 \\ 
+#   21 & C20.1 & all & 0.88 \\ 
+#   22 & C20.1 & lipidEnr & 0.28 \\ 
+#    \hline
+# \end{tabular}
+# \end{table}
+```
+
+Correlation
+```{r, echo = T, eval = F}
+InputData <- readRDS("InputData_FAs.rds")
+phenos <- InputData$phenotypes
+phenos <- phenos[grep("fatty", colnames(phenos))]
+traits <- sub("fatty.acid.", "", colnames(phenos))
+
+###############
+###############
+# All Markers #
+###############
+###############
+
+###########
+# LD 0.50 #
+###########
+
+CVfiles <- list.files(path = "flashr/GP/AllMrks_across/LD0.5/", full.names = T, pattern = "^FA_")
+
+CVres <- NULL
+for(i in CVfiles){
+  CVres <- rbind(CVres,
+                 colMeans(readRDS(i)))
+}
+
+CVres_all0.5 <- data.frame(Trait = c(rep(colnames(phenos), each = 50),
+                              rep(colnames(phenos), each = 50)), 
+                    Method = rep(c("MK", "gBLUP"), each = length(colnames(phenos))*50),
+                    Mrks = "all",
+                    LD = 0.5,
+                    r = c(CVres))
+
+#################
+#################
+# Lipid Enrich. #
+#################
+#################
+
+###########
+# LD 0.50 #
+###########
+
+CVfiles <- list.files(path = "snpSet_BGLR_pred/lipidEnr_across/LD0.5/", full.names = T, pattern = "^FA_")
+
+CVres <- NULL
+for(i in CVfiles){
+  CVres <- rbind(CVres,
+                 colMeans(readRDS(i)))
+}
+
+CVres_lip0.5 <- data.frame(Trait = c(rep(colnames(phenos), each = 50),
+                              rep(colnames(phenos), each = 50)), 
+                    Method = rep(c("MK", "gBLUP"), each = length(colnames(phenos))*50),
+                    Mrks = "lipidEnr",
+                    LD = 0.5,
+                    r = c(CVres))
+
+CVres_lip0.5 <- CVres_lip0.5[!CVres_lip0.5$Method %in% "gBLUP" ,]
+
+CVres_r <- rbind(CVres_all0.5, CVres_lip0.5)
+
+
+CVres_r_sum <- ddply(CVres_percent, .(Trait, Mrks), summarise, meanR = mean(r, na.rm = T))
+summary(CVres_r_sum[CVres_r_sum$Mrks %in% "lipidEnr" ,])
+```
+
+Two panel, bottom-to-top boxplot
+```{r, echo = T, eval = F}
+pdf("Figs/PredictionAccuracy_FAs.pdf", w = 5.5, h = 4.5)
+nf <- layout(rbind(c(1,1,1,1, 1,1,1,1, 1,1,1), 
+                   c(2,2,2,3, 3,3,3,3, 3,3,3)))
+
+###########
+# Panel A #
+###########
+
+par(mar = c(3, 3.5, 1.5, 1.5), mgp=c(2.0,1,0), xpd = T)
+
+atAxis <- c(1,2,3, 5,6,7, 9,10,11, 13,14,15, 17,18,19,
+            21,22,23, 25,26,27, 29,30,31, 33,34,35, 37,38,39,
+            41,42,43)
+
+# Correlation
+boxplot(r ~ interaction(Method, Mrks, Trait, drop = T), CVres_r, las = 2, cex.axis = 0.75,
+        xlab = "", cex = 0.5, xaxt = "n", ylab = expression(italic(r)),
+        at = c(1,2,3, 5,6,7, 9,10,11, 13,14,15, 17,18,19,
+               21,22,23, 25,26,27, 29,30,31, 33,34,35, 37,38,39,
+               41,42,43), 
+        col = rep(wesanderson::wes_palette("Darjeeling2")[1:3], 11), medlwd = 1.25)
+
+traits <- c("14:0", "16:0", "16:1", "18:0", "18:1(9)", "18:1",
+                "18:2", "18:3", "19:0", "20:0", "20:1")
+for(i in 1:11){
+  endIndx <- i*3
+  startIndx <- endIndx - 2
+  segments(x0 = atAxis[startIndx], x1 = atAxis[endIndx], 
+           y0 = (min(CVres_r$r) - (max(CVres_r$r)-min(CVres_r$r))*0.1),
+           y1 = (min(CVres_r$r) - (max(CVres_r$r)-min(CVres_r$r))*0.1), lty = 1, lwd = 2)
+  text(x = ((atAxis[endIndx] - atAxis[startIndx])/2) + atAxis[startIndx], 
+       y = (min(CVres_r$r) - (max(CVres_r$r)-min(CVres_r$r))*0.15), labels = traits[i],
+       cex = 1)
+}
+
+legend("bottomleft", legend = c("gBLUP", "MK-all", "MK-lip"), 
+       fill = wesanderson::wes_palette("Darjeeling2")[1:3], bty = "n", cex = 0.75)
+
+mtext("A", 2,  adj=4.5, las=1, padj=-9, font=1, cex=0.8)
+
+
+###########
+# Panel B #
+###########
+par(mar = c(2.5, 3, 1.5, 1.5), mgp=c(2.0,1,0), xpd = T)
+#Percent Change
+
+tmp <- CVres_percent[CVres_percent$Trait %in% c("C14.0", "C16.0", "C19.0") ,]
+tmp$Trait <- droplevels(tmp$Trait)
+atAxis <- c(1,2, 5,6, 9,10)
+
+boxplot(r ~ Mrks*Trait, tmp, las = 2, cex.axis = 0.75,
+        xlab = "", cex = 0.5, xaxt = "n", ylab = expression("% diff."),
+        at = atAxis, col = rep(wesanderson::wes_palette("Moonrise3")[c(3,5)], 2), medlwd = 1.25)
+
+axis(1, at = c(1.5, 5.5, 9.5), #labels = c("All \n Fact.", "Lipid- \n enr."), 
+     las = 1, cex.axis = 0.75, font = 1, labels = NA)
+
+text(x = 1.5, y = (min(tmp$r, na.rm = T) - (max(tmp$r, na.rm = T)-min(tmp$r, na.rm = T))*0.175), 
+     labels = "14:0", cex = 1)
+text(x = 5.5, y = (min(tmp$r, na.rm = T) - (max(tmp$r, na.rm = T)-min(tmp$r, na.rm = T))*0.175), 
+     labels = "16:0", cex = 1)
+text(x = 9.5, y = (min(tmp$r, na.rm = T) - (max(tmp$r, na.rm = T)-min(tmp$r, na.rm = T))*0.175), 
+     labels = "19:0", cex = 1)
+
+
+legend("topleft", legend = c("All. Fact", "Lipid-enr."), 
+       fill = wesanderson::wes_palette("Moonrise3")[c(3,5)], bty = "n", cex = 0.75)
+
+mtext("B", 2,  adj=4, las=1, padj=-9, font=1, cex=0.8)
+
+
+###########
+# Panel C #
+###########
+traits <- c("16:1", "18:0", "18:1(9)", "18:1",
+            "18:2", "18:3", "20:0", "20:1")
+
+par(mar = c(2.5, 3, 1.5, 1.5), mgp=c(2.0,1,0), xpd = T)
+
+tmp <- CVres_percent[! CVres_percent$Trait %in% c("C14.0", "C16.0", "C19.0") ,]
+tmp$Trait <- droplevels(tmp$Trait)
+atAxis <- c(1,2, 5,6, 9,10, 13,14,
+            17,18, 21,22, 25,26, 29,30)
+
+boxplot(r ~ Mrks*Trait, tmp, las = 2, cex.axis = 0.75,
+        xlab = "", cex = 0.5, xaxt = "n", ylab = expression("% diff."),
+        at = atAxis, col = rep(wesanderson::wes_palette("Moonrise3")[c(3,5)], 2), medlwd = 1.25)
+
+axis(1, at = c(1.5, 5.5, 9.5, 13.5, 17.5, 21.5, 25.5, 29.5), 
+     #labels = c("All \n Fact.", "Lipid- \n enr."), 
+     las = 1, cex.axis = 0.75, font = 1, labels = NA)
+
+for(i in 1:8){
+  endIndx <- i*2
+  startIndx <- endIndx - 1
+  text(x = ((atAxis[endIndx] - atAxis[startIndx])/2 + atAxis[startIndx]),
+       y = (min(tmp$r, na.rm = T) - (max(tmp$r, na.rm = T) - min(tmp$r, na.rm = T))*0.175), 
+     labels = traits[i], cex = 1)
+  
+}
+
+legend("topright", legend = c("All. Fact", "Lipid-enr."), 
+       fill = wesanderson::wes_palette("Moonrise3")[c(3,5)], bty = "n", cex = 0.75)
+
+mtext("C", 2,  adj=4, las=1, padj=-9, font=1, cex=0.8)
+
+dev.off()
+```

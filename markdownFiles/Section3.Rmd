@@ -1,0 +1,546 @@
+---
+title: "Factor analysis reveals common biological features of the oat seed metabolome"
+author: "Malachy Campbell"
+date: "3/26/2020"
+output:
+  rmdformats::html_clean:
+    fig_width: 6
+    fig_height: 6
+    highlight: kate
+    thumbnails: true
+    lightbox: true
+    gallery: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      root.dir = "~/Documents/Dropbox/Work/Manuscripts/2020_OatLF/")
+```
+
+# Summary
+The code provided below describes the annotation-based enrichment approach.
+
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+#Enrichment function
+Kim.lds <- function(Annot = NULL, ldgMat = NULL, AnnClass = NULL, minNo = NULL){
+  tmpAnnot <- Annot[c("cmpd", AnnClass)]
+  colnames(tmpAnnot)[2] <- "class"
+  
+  tmpRes <- NULL
+  
+  for(fact in 1:ncol(ldgMat)){ #for each factor
+    tmp.ldgMat <- as.data.frame(ldgMat[,fact, drop = F]) #extract the loadings
+    colnames(tmp.ldgMat) <- "Y" #rename the column of loadings
+    tmpAnnot <- tmpAnnot[tmpAnnot$cmpd %in% row.names(tmp.ldgMat) ,] #keep only compounds that were used fo FA
+    
+    functClasses <- na.omit(unique(tmpAnnot$class)) #remove metabolites that do not have annotations
+    
+    for(i in 1:length(functClasses)){ #for each annotation category
+      mets.in <- tmpAnnot[tmpAnnot$class %in% functClasses[i] ,] #get the compounds in the given category
+      if(nrow(mets.in) >= minNo){
+        lds.in <- tmp.ldgMat[row.names(tmp.ldgMat) %in% mets.in$cmpd , drop = F ,]
+        tmp.ldgMat <- as.matrix(tmp.ldgMat); lds.in <- as.matrix(lds.in)
+        topPart <- sum(diag(lds.in %*% t(lds.in))) / (sum(diag(tmp.ldgMat %*% t(tmp.ldgMat))))
+        bottomPart <- nrow(lds.in)/nrow(tmp.ldgMat)
+      
+        Estat <- topPart/bottomPart
+      
+        tmpRes <- rbind(tmpRes, 
+                        data.frame(fact = paste0("Fact", fact),
+                                   AnnClass = AnnClass, 
+                                   FunctClass = functClasses[i],
+                                   VarInClass = sum(diag(lds.in %*% t(lds.in))),
+                                   VarAllFac = sum(diag(tmp.ldgMat %*% t(tmp.ldgMat))),
+                                   NoInClass = nrow(mets.in),
+                                   enrich = Estat))
+      }else{
+        tmpRes <- rbind(tmpRes, 
+                        data.frame(fact = paste0("Fact", fact),
+                                   AnnClass = AnnClass, 
+                                   FunctClass = functClasses[i],
+                                   VarInClass = NA,
+                                   VarAllFac = NA,
+                                   NoInClass = nrow(mets.in),
+                                   enrich = NA))
+      }
+      }#end of functional class loop
+    }#end of factor loop
+  return(tmpRes)
+  }
+
+
+####
+
+factsbf <- readRDS("flashr/Greedy_pl/column_sc/factsbf_greedy_sc.rds") #results from backfitting algorithm
+
+PVE <- factsbf$pve
+lds <- factsbf$ldf$f #loadings met x k
+
+Annot.GC <- read.csv("flashr/metaFiles/GCMS_2018_GC.03_annotation.csv")[c(1,3,4,9:14)]
+Annot.LC <- read.csv("flashr/metaFiles/LCMS_2018_LC.03_annotation.csv")[c(1,3,4,16:21)]
+Annot <- rbind(Annot.GC, Annot.LC)
+rm(Annot.LC, Annot.GC)
+
+#debugonce(Kim.lds)
+superclass.Kim <- Kim.lds(Annot = Annot, ldgMat = lds, AnnClass = "superclass", minNo = 5)
+subclass.Kim <- Kim.lds(Annot = Annot, ldgMat = lds, AnnClass = "subclass", minNo = 5)
+class.Kim <- Kim.lds(Annot = Annot, ldgMat = lds, AnnClass = "class", minNo = 5)
+parent.Kim <- Kim.lds(Annot = Annot, ldgMat = lds, AnnClass = "parent", minNo = 5)
+
+saveRDS(list(superclass = superclass.Kim,
+             subclass = subclass.Kim,
+             class = class.Kim,
+             parent = parent.Kim),
+        "flashr/Greedy_pl/column_sc/enrichment/EnrichmentResults.rds")
+```
+
+#### Permutation-based approach to calculate p-values
+
+Code for permutations. This was run on the cluster so the paths will not match with the code above.
+```{r, echo = T, eval = F}
+library(argparse)
+
+rm(list = ls())
+
+#Enrichment function
+Kim.lds <- function(Annot = NULL, ldgMat = NULL, AnnClass = NULL, minNo = NULL){
+  tmpAnnot <- Annot[c("cmpd", AnnClass)]
+  colnames(tmpAnnot)[2] <- "class"
+  
+  tmpRes <- NULL
+  
+  for(fact in 1:ncol(ldgMat)){ #for each factor
+    tmp.ldgMat <- as.data.frame(ldgMat[,fact, drop = F]) #extract the loadings
+    colnames(tmp.ldgMat) <- "Y" #rename the column of loadings
+    tmpAnnot <- tmpAnnot[tmpAnnot$cmpd %in% row.names(tmp.ldgMat) ,] #keep only compounds that were used fo FA
+    
+    functClasses <- na.omit(unique(tmpAnnot$class)) #remove metabolites that do not have annotations
+    
+    for(i in 1:length(functClasses)){ #for each annotation category
+      mets.in <- tmpAnnot[tmpAnnot$class %in% functClasses[i] ,] #get the compounds in the given category
+      if(nrow(mets.in) >= minNo){
+        lds.in <- tmp.ldgMat[row.names(tmp.ldgMat) %in% mets.in$cmpd , drop = F ,]
+        tmp.ldgMat <- as.matrix(tmp.ldgMat); lds.in <- as.matrix(lds.in)
+        topPart <- sum(diag(lds.in %*% t(lds.in))) / (sum(diag(tmp.ldgMat %*% t(tmp.ldgMat))))
+        bottomPart <- nrow(lds.in)/nrow(tmp.ldgMat)
+      
+        Estat <- topPart/bottomPart
+      
+        tmpRes <- rbind(tmpRes, 
+                        data.frame(fact = paste0("Fact", fact),
+                                   AnnClass = AnnClass, 
+                                   FunctClass = functClasses[i],
+                                   VarInClass = sum(diag(lds.in %*% t(lds.in))),
+                                   VarAllFac = sum(diag(tmp.ldgMat %*% t(tmp.ldgMat))),
+                                   NoInClass = nrow(mets.in),
+                                   enrich = Estat))
+      }else{
+        tmpRes <- rbind(tmpRes, 
+                        data.frame(fact = paste0("Fact", fact),
+                                   AnnClass = AnnClass, 
+                                   FunctClass = functClasses[i],
+                                   VarInClass = NA,
+                                   VarAllFac = NA,
+                                   NoInClass = nrow(mets.in),
+                                   enrich = NA))
+      }
+      }#end of functional class loop
+    }#end of factor loop
+  return(tmpRes)
+  }
+
+
+####
+parser <- ArgumentParser(description = "Permutations for enrichment test based on Kim et al (2018)")
+parser$add_argument("--arrayNo", dest="arrayNo", required=TRUE, help="Uses the array number to determine seed for sample")
+args <- parser$parse_args()
+
+JobNo <- as.numeric(args$arrayNo)
+
+InputDat <- readRDS("InputData_kimEnrich.rds")
+Annot <- InputDat$Annot
+lds <- InputDat$lds
+
+superclass.Kim <- NULL
+class.Kim <- NULL
+subclass.Kim <- NULL
+parent.Kim <- NULL
+
+for(i in 1:100){
+  SEED = 125486 + JobNo + i
+  set.seed(SEED)
+
+  row.names(lds) <- row.names(lds)[sample(1:nrow(lds), replace = F)]
+
+  superclass.Kim <- rbind(superclass.Kim ,
+                          Kim.lds(Annot = Annot, ldgMat = lds, AnnClass = "superclass", minNo = 5))
+  class.Kim <- rbind(class.Kim, 
+                     Kim.lds(Annot = Annot, ldgMat = lds, AnnClass = "class", minNo = 5))
+  subclass.Kim <- rbind(subclass.Kim,
+                        Kim.lds(Annot = Annot, ldgMat = lds, AnnClass = "subclass", minNo = 5))
+  parent <- rbind(parent.Kim,
+                  Kim.lds(Annot = Annot, ldgMat = lds, AnnClass = "parent", minNo = 5))
+}
+
+
+saveRDS(list = (seed = SEED,
+                superclass = superclass.Kim,
+                class = class.Kim,
+                subclass = subclass.Kim,
+                parent = parent.Kim),
+        paste0("Perm_", JobNo, ".rds"))
+```
+
+Prep files for permutation.
+```{r, echo = T, eval = F}
+rm(list = ls())
+
+factsbf <- readRDS("flashr/Greedy_pl/column_sc/factsbf_greedy_sc.rds") #results from backfitting algorithm
+
+Annot.GC <- read.csv("flashr/metaFiles/GCMS_2018_GC.03_annotation.csv")[c(1,3,4,9:14)]
+Annot.LC <- read.csv("flashr/metaFiles/LCMS_2018_LC.03_annotation.csv")[c(1,3,4,16:21)]
+Annot <- rbind(Annot.GC, Annot.LC)
+rm(Annot.LC, Annot.GC)
+
+saveRDS(list(Annot = Annot,
+             lds = factsbf$ldf$f),
+        "flashr/Greedy_pl/column_sc/enrichment/InputData_Enrich.rds")
+```
+
+
+```{r, echo = T, eval = F}
+library(qvalue)
+
+rm(list = ls())
+
+permFiles <- list.files(path = "flashr/Greedy_pl/column_sc/enrichment_kim_5/", 
+                        pattern = "Perm_", full.names = T)
+
+permSupercl <- NULL
+permclass <- NULL
+permSubclas <- NULL
+permParent <- NULL
+for(i in 1:length(permFiles)){
+    permSupercl <- rbind(permSupercl, readRDS(permFiles[i])$superclass)
+    permclass <- rbind(permclass, readRDS(permFiles[i])$class)
+    permSubclas <- rbind(permSubclas, readRDS(permFiles[i])$subclass)
+    permParent <- rbind(permParent, 
+                        readRDS(permFiles[i])$parent)
+}
+
+
+enrichRes <- readRDS("flashr/Greedy_pl/column_sc/enrichment/EnrichmentResults.rds")
+superclass <- enrichRes$superclass
+Class <- enrichRes$class
+subclass <- enrichRes$subclass
+parent <- enrichRes$parent
+
+p4enrich <- function(permDF = NULL, enrichDF = NULL){
+  ResDF <- NULL
+  require(qvalue)
+  Facts <- unique(enrichDF$fact)
+  for(fact in 1:length(Facts)){
+    tmpRes <- enrichDF[enrichDF$fact %in% Facts[fact] ,]
+    tmpPerm <- permDF[permDF$fact %in% Facts[fact] ,]
+    
+    Cats <- unique(tmpRes$FunctClass)
+    for(cate in 1:length(Cats)){
+      tmp2Res <- tmpRes[tmpRes$FunctClass %in% Cats[cate] ,]
+      tmp2Perm <- tmpPerm[tmpPerm$FunctClass %in% Cats[cate] ,]
+      
+      if(is.na(tmp2Res$VarInClass)){
+        ResDF <- rbind(ResDF,
+                       data.frame(Factor = Facts[fact],
+                                  Category = Cats[cate],
+                                  VarIn = NA,
+                                  Null0.95_enrich = NA,
+                                  Enrich = NA,
+                                  p_enrich = NA,
+                                  Null0.95_VarIn = NA,
+                                  p_VarIn = NA))
+      }else{
+        pval_Enrich <- empPvals(stat = tmp2Res$enrich, stat0 = tmp2Perm$enrich)
+        pval_VarIn <- empPvals(stat = tmp2Res$VarInClass, stat0 = tmp2Perm$VarInClass)
+        ResDF <- rbind(ResDF,
+                       data.frame(Factor = Facts[fact],
+                                  Category = Cats[cate],
+                                  VarIn = tmp2Res$VarInClass,
+                                  Null0.95_enrich = quantile(tmp2Perm$enrich, 
+                                                             0.95, na.rm = T),
+                                  Enrich = tmp2Res$enrich,
+                                  p_enrich = pval_Enrich,
+                                  Null0.95_VarIn = quantile(tmp2Perm$VarInClass, 
+                                                            0.95, na.rm = T),
+                                  p_VarIn = pval_VarIn))
+      }
+    }
+  }
+  return(ResDF)
+}
+
+#debugonce(p4enrich)
+superclass_res <- p4enrich(permDF = permSupercl, enrichDF = superclass)
+superclass_res <- superclass_res[!is.na(superclass_res$VarIn) ,]
+superclass_res$qval_enrich <- qvalue(superclass_res$p_enrich)$qvalues
+superclass_res$qval_varIn <- qvalue(superclass_res$p_VarIn)$qvalues
+superclass_res_sig <- superclass_res[superclass_res$qval_varIn <= 0.05 ,]
+length(unique(superclass_res_sig$Factor)) #37
+
+class_res <- p4enrich(permDF = permclass, enrichDF = Class)
+class_res <- class_res[!is.na(class_res$VarIn) ,]
+class_res$qval_enrich <- qvalue(class_res$p_enrich)$qvalues
+class_res$qval_varIn <- qvalue(class_res$p_VarIn)$qvalues
+class_res_sig <- class_res[class_res$qval_varIn <= 0.05 ,]
+length(unique(class_res_sig$Factor)) #40
+
+subclass_res <- p4enrich(permDF = permSubclas, enrichDF = subclass)
+subclass_res <- subclass_res[!is.na(subclass_res$VarIn) ,]
+subclass_res$qval_enrich <- qvalue(subclass_res$p_enrich)$qvalues
+subclass_res$qval_varIn <- qvalue(subclass_res$p_VarIn)$qvalues
+subclass_res_sig <- subclass_res[subclass_res$qval_varIn <= 0.05 ,]
+length(unique(subclass_res_sig$Factor)) #36
+
+parent_res <- p4enrich(permDF = permParent, enrichDF = parent)
+parent_res <- parent_res[!is.na(parent_res$VarIn) ,]
+parent_res$qval_enrich <- qvalue(parent_res$p_enrich)$qvalues
+parent_res$qval_varIn <- qvalue(parent_res$p_VarIn)$qvalues
+parent_res_sig <- parent_res[parent_res$qval_varIn <= 0.05 ,]
+length(unique(parent_res_sig$Factor)) #0
+
+write.csv(superclass_res, "flashr/Greedy_pl/column_sc/enrichment/superclass_empP_2.csv", row.names = F)
+write.csv(class_res, "flashr/Greedy_pl/column_sc/enrichment/class_empP_2.csv", row.names = F)
+write.csv(subclass_res, "flashr/Greedy_pl/column_sc/enrichment/subclass_empP_2.csv", row.names = F)
+write.csv(parent_res, "flashr/Greedy_pl/column_sc/enrichment/parent_empP_2.csv", row.names = F)
+```
+
+summarise results
+```{r, echo = T, eval = F}
+library(ggplot2)
+library(cowplot)
+library(grid)
+library(gtable)
+
+rm(list = ls())
+
+superclass_res <- read.csv("flashr/Greedy_pl/column_sc/enrichment/superclass_empP_2.csv")
+class_res <- read.csv("flashr/Greedy_pl/column_sc/enrichment/class_empP_2.csv")
+subclass_res <- read.csv("flashr/Greedy_pl/column_sc/enrichment/subclass_empP_2.csv")
+
+superclass_res_sig <- superclass_res[superclass_res$qval_varIn <= 0.05 ,]
+class_res_sig <- class_res[class_res$qval_varIn <= 0.05 ,]
+subclass_res_sig <- subclass_res[subclass_res$qval_varIn <= 0.05 ,]
+
+#get categories with one or more significant enrichments at superclass level
+superclass_cnts <- table(superclass_res_sig$Category); superclass_cnts <- names(superclass_cnts[superclass_cnts > 1])
+
+#Find the lower tax levels that correspond to significant superclass categories
+Annot.GC <- read.csv("flashr/metaFiles/GCMS_2018_GC.03_annotation.csv")[c(1,3,4,9:14)]
+Annot.LC <- read.csv("flashr/metaFiles/LCMS_2018_LC.03_annotation.csv")[c(1,3,4,16:21)]
+Annot <- rbind(Annot.GC, Annot.LC); Annot <- na.omit(unique(Annot[c("superclass", "class", "subclass")]))
+rm(Annot.LC, Annot.GC)
+Annot <- Annot[Annot$superclass %in% superclass_cnts ,]
+
+###
+class_res_sig <- class_res_sig[class_res_sig$Category %in% Annot$class ,]; class_res_sig$Lvl <- "Class"
+class_res_sig <- merge(class_res_sig, unique(Annot[c("superclass", "class")]), by.x = "Category", by.y = "class")
+
+subclass_res_sig <- subclass_res_sig[subclass_res_sig$Category %in% Annot$subclass ,]; subclass_res_sig$Lvl <- "subclass"
+subclass_res_sig <- merge(subclass_res_sig, unique(Annot[c("superclass", "subclass")]), by.x = "Category", by.y = "subclass")
+
+Res <- rbind(class_res_sig, subclass_res_sig)
+Res <- Res[c("Factor", "Category", "Lvl", "VarIn", "superclass")]
+Res$Factor <- as.numeric(sub("Fact", "", Res$Factor))
+Res$Lvl <- sub("subclass", "Subclass", Res$Lvl)
+colnames(Res)[3] <- "Level"
+
+########
+# plot #
+########
+
+hitTable <- ggplot(aes(Category, factor(Factor), 
+                   size = VarIn,
+                   colour = Level), data = Res) +
+            geom_point() +
+            scale_colour_manual(name = "Level", 
+                                values = wes_palette("Darjeeling1")[1:2], 
+                                drop = FALSE) +
+            scale_size_continuous(range = c(0, 3),
+                                  limits = c(0, 0.75),
+                                  breaks = c(0.25, 0.5, 0.75),
+                                  name = "Proportion of variance explained") +
+            facet_grid(. ~ superclass + Level,
+                       scales = "free",
+                       space = "free",
+                       switch = "y") +
+            theme_bw() + 
+            theme(axis.text.x = element_text(size = 4, angle = 45, hjust = 1),
+                  axis.text.y = element_text(size = 4),
+                  axis.title.x = element_blank(),
+                  axis.title.y = element_text(size = 6, angle = 90),
+                  axis.ticks.x = element_line(size = 0.25),
+                  axis.ticks.y = element_line(size = 0.25),
+                  panel.spacing.y = unit(0.1, "lines"),
+                  panel.spacing.x = unit(0.1, "lines"),
+                  panel.grid.major = element_line(colour = 'lightgray', size = 0.25),
+                  strip.text.x = element_text(size = 4, angle = 00),
+                  legend.position = "top",
+                  legend.text = element_text(size = 4),
+                  legend.title = element_text(size = 6)) +
+            labs(y = "Factor", x = "Functional Class") +
+            # guides(colour = FALSE, 
+            #        size = guide_legend(ncol = 3, nrow = 1, byrow = TRUE, keyheight = unit(0.1, "in"))) +
+            scale_y_discrete(position = "left")
+
+
+z <- ggplotGrob(hitTable)
+# gtable_show_layout(z)
+
+#strip text is in row 9
+## Replace row 9 from panels 1-2 with "Lipids and lipid−like molecules"
+z <- gtable_add_grob(z, 
+                     list(rectGrob(gp = gpar(col = "black", fill = "gray85", size = .5)),
+                          textGrob("Lipids and lipid-like molecules", rot = 00,  
+                                   gp = gpar(fontsize = 4, fontface = 'plain', col = "black"))), 
+                     t=9, l=5, b=9, r=11, name = c("a", "b"))
+z <- gtable_add_grob(z, 
+                     list(rectGrob(gp = gpar(col = "black", fill = "gray85", size = .5)),
+                          textGrob("Organic oxygen\n compounds", rot = 00,  
+                                   gp = gpar(fontsize = 4, fontface = 'plain', col = "black"))), 
+                     t=9, l=13, b=9, r=15, name = c("c", "d"))
+
+z <- gtable_add_grob(z, 
+                     list(rectGrob(gp = gpar(col = "black", fill = "gray85", size = .5)),
+                          textGrob("Organoheterocyclic\n compounds", rot = 00,  
+                                   gp = gpar(fontsize = 4, fontface = 'plain', col = "black"))), 
+                     t=9, l=17, b=9, r=19, name = c("e", "f"))
+
+z <- gtable_add_grob(z, 
+                     list(rectGrob(gp = gpar(col = "black", fill = "gray85", size = .5)),
+                          textGrob("Phenylpropanoids\n and\n polyketides", rot = 00,  
+                                   gp = gpar(fontsize = 4, fontface = 'plain', col = "black"))), 
+                     t=9, l=21, b=9, r=23, name = c("g", "h"))
+
+grid.newpage()
+hitTable <- ggplotify::as.ggplot(z)
+```
+
+For manuscript.
+```{r, echo = T, eval = F}
+library(ggplot2)
+library(cowplot)
+
+#rm(list = ls())
+Annot.GC <- read.csv("flashr/metaFiles/GCMS_2018_GC.03_annotation.csv")[c(1,3,4,9:14)]
+Annot.LC <- read.csv("flashr/metaFiles/LCMS_2018_LC.03_annotation.csv")[c(1,3,4,16:21)]
+Annot <- rbind(Annot.GC, Annot.LC)
+rm(Annot.LC, Annot.GC)
+
+superclass_res <- read.csv("flashr/Greedy_pl/column_sc/enrichment/superclass_empP_2.csv") #8 total
+superclass_res <- superclass_res[superclass_res$qval_varIn < 0.05 ,]; length(unique(superclass_res$Factor))
+superclass_res$Factor <- as.numeric(sub("Fact", "", superclass_res$Factor))
+supCnts <- data.frame(Class = names(table(superclass_res$Category)), 
+                      Cnts = as.numeric(table(superclass_res$Category)))
+
+class_res <- read.csv("flashr/Greedy_pl/column_sc/enrichment/class_empP_2.csv") #17
+class_res <- class_res[class_res$qval_varIn < 0.05 ,]; length(unique(class_res$Factor)) #40
+class_res$Factor <- as.numeric(sub("Fact", "", class_res$Factor))
+clCnts <- data.frame(Class = names(table(class_res$Category)), 
+                     Cnts = as.numeric(table(class_res$Category)))
+
+subclass_res <- read.csv("flashr/Greedy_pl/column_sc/enrichment/subclass_empP_2.csv")
+subclass_res <- subclass_res[subclass_res$qval_varIn < 0.05 ,]; length(unique(subclass_res$Factor)) #25 categories
+subclass_res$Factor <- as.numeric(sub("Fact", "", subclass_res$Factor))
+subCnts <- data.frame(Class = names(table(subclass_res$Category)), 
+                      Cnts = as.numeric(table(subclass_res$Category)))
+
+
+superCl <- ggplot(supCnts, aes(x = Class, y = Cnts)) +
+           geom_bar(stat="identity", position=position_dodge(width = 0.25), 
+                    colour=wes_palette("Darjeeling1")[5], 
+                    width = 0.6, size = 0.2, fill = wes_palette("Darjeeling1")[5]) +
+           #coord_flip() +
+           ylab("No. factors") +
+           #scale_x_discrete(limits = supCnts$Class) + 
+           #labs(title = "Subclass") +
+           #xlab("") +
+           #scale_y_continuous(limits = c(-0.1, 1.1)) +
+           theme(panel.grid.major = element_blank(), 
+                 panel.grid.minor = element_blank(),
+                 panel.background = element_blank(), 
+                 axis.line = element_line(colour = "black", lineend = "square", size = 0.25),
+                 plot.title = element_text(face = "bold", size = 6, hjust = 0.5),
+                 axis.ticks.x = element_line(size = 0.25),
+                 axis.ticks.y = element_line(size = 0.25)) +
+           theme(axis.title.y = element_text(size = 6)) + 
+           theme(axis.title.x = element_blank()) +
+           theme(axis.text.x = element_text(size = 4, angle = 45, vjust = 1, hjust = 1)) +
+           theme(axis.text.y = element_text(size = 4, angle = 00)) +
+           theme(plot.margin = unit(c(5, 5, 5.5, 20),"pt"))
+
+Class <- ggplot(clCnts, aes(x = Class, y = Cnts)) +
+           geom_bar(stat="identity", position=position_dodge(width = 0.25), 
+                    colour=wes_palette("Darjeeling1")[1], 
+                    width = 0.6, size = 0.2, fill = wes_palette("Darjeeling1")[1]) +
+           #coord_flip() +
+           ylab("No. factors") +
+           #scale_x_discrete(limits = supCnts$Class) + 
+           #labs(title = "Subclass") +
+           #xlab("") +
+           #scale_y_continuous(limits = c(-0.1, 1.1)) +
+           theme(panel.grid.major = element_blank(), 
+                 panel.grid.minor = element_blank(),
+                 panel.background = element_blank(), 
+                 axis.line = element_line(colour = "black", lineend = "square", size = 0.25),
+                 plot.title = element_text(face = "bold", size = 6, hjust = 0.5),
+                 axis.ticks.x = element_line(size = 0.25),
+                 axis.ticks.y = element_line(size = 0.25)) +
+           theme(axis.title.y = element_text(size = 6)) + 
+           theme(axis.title.x = element_blank()) +
+           theme(axis.text.x = element_text(size = 4, angle = 45, vjust = 1, hjust = 1)) +
+           theme(axis.text.y = element_text(size = 4, angle = 00)) +
+           theme(plot.margin = unit(c(5, 5, 5.5, 20),"pt"))
+
+subClas <- ggplot(subCnts, aes(x = Class, y = Cnts)) +
+           geom_bar(stat="identity", position=position_dodge(width = 0.25), 
+                    colour=wes_palette("Darjeeling1")[4], 
+                    width = 0.6, size = 0.2, fill = wes_palette("Darjeeling1")[4]) +
+           #coord_flip() +
+           ylab("No. factors") +
+           #scale_x_discrete(limits = supCnts$Class) + 
+           #labs(title = "Subclass") +
+           #xlab("") +
+           #scale_y_continuous(limits = c(-0.1, 1.1)) +
+           theme(panel.grid.major = element_blank(), 
+                 panel.grid.minor = element_blank(),
+                 panel.background = element_blank(), 
+                 axis.line = element_line(colour = "black", lineend = "square", size = 0.25),
+                 plot.title = element_text(face = "bold", size = 6, hjust = 0.5),
+                 axis.ticks.x = element_line(size = 0.25),
+                 axis.ticks.y = element_line(size = 0.25)) +
+           theme(axis.title.y = element_text(size = 6)) + 
+           theme(axis.title.x = element_blank()) +
+           theme(axis.text.x = element_text(size = 4, angle = 45, vjust = 1, hjust = 1)) +
+           theme(axis.text.y = element_text(size = 4, angle = 00)) +
+           theme(plot.margin = unit(c(5, 5, 5.5, 20),"pt"))
+
+
+
+topRow <- plot_grid(superCl + theme(legend.position = "none"), 
+                   Class + theme(legend.position = "none"), 
+                   labels = c("A", "B"), label_size = 8, ncol = 2, 
+                   label_fontface = "plain", rel_widths = c(2,3))
+
+Pgrid <- plot_grid(topRow, hitTable + theme(legend.position = "none"),
+                   labels = c('', 'C'),
+                   label_size = 8, 
+                   label_fontface = "plain",
+                   ncol = 1, nrow = 2, 
+                   hjust = -0.5, vjust = 1.2,
+                   rel_heights = c(1,2))
+
+pdf("Figs/FunctEnrich_manuscript.pdf", h = 6.2, w = 6.2)
+plot_grid(Pgrid)
+dev.off()
+```

@@ -1,0 +1,322 @@
+---
+title: "Large-scale metabolomics provides insight into natural variation in the chemical composition of oat seed"
+author: "Malachy Campbell"
+date: "3/26/2020"
+output:
+  rmdformats::html_clean:
+    fig_width: 6
+    fig_height: 6
+    highlight: kate
+    thumbnails: true
+    lightbox: true
+    gallery: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      root.dir = "~/Documents/Dropbox/Work/Manuscripts/2020_OatLF/")
+```
+
+# Summary
+This file contains all the code used to generate the results for the section titled "Large-scale metabolomics provides insight into natural variation in the chemical composition of oat seed". Below is the code to perform $k$-means clustering of accessions based on marker data, ANOVA of metabolites between subpopulations, and the code for enrichment analysis of these differentially expressed metabolites.
+
+## Population structure in marker and metabolites
+
+```{r, echo = T, eval = F}
+library(ggplot2)
+library(wesanderson)
+library(cowplot)
+
+rm(list = ls())
+
+Input <- readRDS("GWAS/allMrks/InputData.rds")
+
+mets <- Input$BLUPs
+mrks <- Input$mrks
+
+popStruct_Kmeans <- function(mrkData = NULL, Ks = NULL, scale = NULL){
+  if(nrow(mrkData) > ncol(mrkData)){
+    cat("Number of individuals (rows) is more than number of markers (columns). Maybe transpose marker matrix? \n \n")
+    }
+  
+  if(!is.null(scale)){
+    if(scale == T){
+      mrkData <- scale(mrkData, center = T, scale = T)
+      
+      cat("Scaling and centering marker data \n \n")
+    }else{
+      cat("Markers won't be scaled or centered \n \n") 
+      }
+    }
+  
+  AICcalc <- function(kmodel = NULL){
+    m = ncol(kmodel$centers)
+    n = length(kmodel$cluster)
+    k = nrow(kmodel$centers)
+    D = kmodel$tot.withinss
+    return(data.frame(AIC = D + 2*m*k,
+                      BIC = D + log(n)*m*k))
+  }
+  
+  kRes <- NULL
+  Klist <- list()
+  for(i in 1:length(Ks)){
+    tmpK <- kmeans(x = mrkData, centers = Ks[i], iter.max = 10000, nstart = 100)
+    kRes <- rbind(kRes, data.frame(NoK = Ks[i], 
+                                   AIC = AICcalc(kmodel = tmpK)[1],
+                                   BIC = AICcalc(kmodel = tmpK)[2]))
+    Klist[[i]] <- tmpK
+    
+    cat("finished Kmeans for K = ", Ks[i], "\n \n")
+  }
+  
+  return(list(AICs = kRes,
+              Klist = Klist))
+} 
+
+
+noClusters <- popStruct_Kmeans(mrkData = mrks, Ks = 1:10, scale = T)
+noClusters$AICs
+#    NoK      AIC      BIC
+# 1    1 20848464 21085127
+# 2    2 19851160 20324486
+# 3    3 19048272 19758260
+# 4    4 18563280 19509932
+# 5    5 18259162 19442477
+# 6    6 17986921 19406899
+# 7    7 17769584 19426224
+# 8    8 17597932 19491236
+# 9    9 17488407 19618373
+# 10  10 17421105 19787735
+
+mPCA <- prcomp(mets, scale. = T, center = T)
+gPCA <- prcomp(mrks, scale. = T, center = T)
+gPVE <- round(100*gPCA$sdev^2/sum(gPCA$sdev^2),1)
+gPCs <- data.frame(Cluster = noClusters$Klist[[6]]$cluster, gPCA$x[,1:10])
+
+mPVE <- round(100*mPCA$sdev^2/sum(mPCA$sdev^2),1)
+mPCs <- data.frame(Cluster = noClusters$Klist[[6]]$cluster, mPCA$x[,1:10])
+
+Input$subpops <- data.frame(GID = row.names(mets), cluster = mPCs$Cluster)
+saveRDS(Input, "GWAS/allMrks/InputData.rds")
+
+genP12 <- ggplot(gPCs, aes(x = PC1, y = PC2)) +
+          geom_point(aes(fill = factor(Cluster)), 
+                     colour = "black", pch = 21, size = 1.5) + 
+          scale_fill_manual(name = "Cluster",
+                            values = c(wes_palette("Darjeeling2"), 
+                                       wes_palette("Darjeeling1")[2])) +
+          labs(x = paste0("PC1 (PVE: ", round(gPVE[1],1), "%)"), 
+               y = paste0("PC2 (PVE: ", round(gPVE[2],1), "%)")) + 
+          theme_bw() + 
+          theme(plot.background = element_blank(),
+                panel.grid.major = element_blank(), 
+                panel.grid.minor = element_blank(), 
+                aspect.ratio = 1, 
+                legend.title = element_text(colour = "black", size = 8), 
+                axis.text.x = element_text(colour = "black", size = 6), 
+                axis.text.y = element_text(colour = "black", size = 6),
+                axis.title = element_text(size = 8)) +
+          theme(plot.margin=unit(c(1.5,2,1,1.5),"pt")) #t,r,b,l
+
+genP34 <- ggplot(gPCs, aes(x = PC3, y = PC4)) +
+          geom_point(aes(fill = factor(Cluster)), 
+                     colour = "black", pch = 21, size = 1.5) +  
+          scale_fill_manual(name = "Cluster",
+                            values = c(wes_palette("Darjeeling2"), 
+                                       wes_palette("Darjeeling1")[2])) +
+          labs(x = paste0("PC3 (PVE: ", round(gPVE[3],1), "%)"), 
+               y = paste0("PC4 (PVE: ", round(gPVE[4],1), "%)")) + 
+          theme_bw() + 
+          theme(plot.background = element_blank(),
+                panel.grid.major = element_blank(), 
+                panel.grid.minor = element_blank(), 
+                aspect.ratio = 1, 
+                legend.title = element_text(colour = "black", size = 8), 
+                axis.text.x = element_text(colour = "black", size = 6), 
+                axis.text.y = element_text(colour = "black", size = 6),
+                axis.title = element_text(size = 8)) +
+          theme(plot.margin=unit(c(1.5,2,1,1.5),"pt")) #t,r,b,l
+
+metP12 <- ggplot(mPCs, aes(x = PC1, y = PC2)) +
+          geom_point(aes(fill = factor(Cluster)), 
+                     colour = "black", pch = 21, size = 1.5) +  
+          scale_fill_manual(name = "Cluster",
+                            values = c(wes_palette("Darjeeling2"), 
+                                       wes_palette("Darjeeling1")[2])) +
+          labs(x = paste0("PC1 (PVE: ", round(mPVE[1],1), "%)"), 
+               y = paste0("PC2 (PVE: ", round(mPVE[2],1), "%)")) + 
+          theme_bw() + 
+          theme(plot.background = element_blank(),
+                panel.grid.major = element_blank(), 
+                panel.grid.minor = element_blank(), 
+                aspect.ratio = 1, 
+                legend.title = element_text(colour = "black", size = 8), 
+                axis.text.x = element_text(colour = "black", size = 6), 
+                axis.text.y = element_text(colour = "black", size = 6),
+                axis.title = element_text(size = 8)) +
+          theme(plot.margin=unit(c(1.5,2,1,1.5),"pt")) #t,r,b,l
+
+metP34 <- ggplot(mPCs, aes(x = PC3, y = PC4)) +
+          geom_point(aes(fill = factor(Cluster)), 
+                     colour = "black", pch = 21, size = 1.5) + 
+          scale_fill_manual(name = "Cluster",
+                            values = c(wes_palette("Darjeeling2"), 
+                                       wes_palette("Darjeeling1")[2])) +
+          labs(x = paste0("PC3 (PVE: ", round(mPVE[3],1), "%)"), 
+               y = paste0("PC4 (PVE: ", round(mPVE[4],1), "%)")) + 
+          theme_bw() + 
+          theme(plot.background = element_blank(),
+                panel.grid.major = element_blank(), 
+                panel.grid.minor = element_blank(), 
+                aspect.ratio = 1, 
+                legend.title = element_text(colour = "black", size = 8), 
+                axis.text.x = element_text(colour = "black", size = 6), 
+                axis.text.y = element_text(colour = "black", size = 6),
+                axis.title = element_text(size = 8)) +
+          theme(plot.margin=unit(c(1.5,2,1,1.5),"pt")) #t,r,b,l
+
+Pgrid <- plot_grid(genP12 + theme(legend.position = "none"), 
+                   genP34 + theme(legend.position = "none"), 
+                   metP12 + theme(legend.position = "none"), 
+                   metP34 + theme(legend.position = "none"),
+                   ncol = 2, nrow = 2,
+                   labels = c("A", "B", "C", "D"), label_size = 8, 
+                   hjust = -0.5, vjust = 1.2)
+
+legs <- get_legend(genP12) #get the legend
+
+pdf("Figs/PCA_allMrks.pdf", h = 5.4, w = 5.4)
+plot_grid(Pgrid, legs, rel_widths = c(2, 0.2))
+dev.off()
+```
+
+
+
+
+## Do metabolites differ between subpopulations?
+```{r, echo = T, eval = F}
+library(car)
+
+rm(list = ls())
+
+Input <- readRDS("flashr/GWAS/allMrks/InputData.rds") #note this analysis uses only 335 accessions with marker data
+mets <- Input$BLUPs
+subpops <- Input$subpops
+
+sum(row.names(mets) == subpops$GID)
+
+AOVres <- NULL
+for (i in 1:ncol(mets)){
+  tmp.df <- data.frame(GID = subpops$GID, subpop = as.factor(subpops$cluster), Y = mets[,i])
+  tmp.aov <- Anova(lm(Y ~ subpop, data = tmp.df), type="III")
+  AOVres <- rbind(AOVres, 
+                  data.frame(cmpd = colnames(mets)[i], term = row.names(tmp.aov), tmp.aov))
+  }
+AOVres <- AOVres[AOVres$term %in% "subpop" ,]
+AOVres$padj <- p.adjust(AOVres$Pr..F., method = "BH")
+
+dim(AOVres[AOVres$padj < 0.01 ,])[1]/nrow(AOVres) #0.407
+
+write.csv(AOVres, "SuppFiles/subpopAOV.csv", row.names = F)
+```
+
+### Enrichment analysis
+Do specific pathways/functional classes vary between subpopulations?
+```{r, echo = T, eval = F}
+library(xtable)
+
+rm(list = ls())
+
+###Function for enrichment test using a hypergeometric test
+hypergeoTest <- function(Annots = NULL, AllCmpdVect = NULL, SigCmpdVect = NULL, AnnotClass = NULL, minNoCmpds = NULL){
+  #Annots: dataframe of annotations with a column called cmpd and the rest of the columns indicating an annotation group/class; same format as trevor's files
+  #AllCmpdVect: a vector of compound names. This is the population of compounds that were used for analysis
+  #SigCmpdVect: a vector of compound names that were significantly different between groups/subpops
+  #AnnotClass: a string that should match a column name in Annots; determines the level of the heirarchy to perform the test(s)
+  #minNoCmpds: min number of compounds in a given class. Test will not be run if no in class is < minNoCmpds
+  
+  tmpAnnot <- Annots[c("cmpd", AnnotClass)]
+  tmpAnnot <- na.omit(tmpAnnot) #remove compounds with no annotation
+  tmpAnnot <- tmpAnnot[tmpAnnot$cmpd %in% AllCmpdVect ,] #only use metabolites that were considered for analysis
+  
+  #Only metabolites with annotations
+  AllCmpdVect <- AllCmpdVect[AllCmpdVect %in% tmpAnnot$cmpd]
+  SigCmpdVect <- SigCmpdVect[SigCmpdVect %in% tmpAnnot$cmpd]
+  
+  colnames(tmpAnnot) <- c("cmpd", "class")
+  
+  #x: Number of annotated, differentially expressed metabolites in a given class (number of white balls drawn)
+  #m: Number of annotated metabolites belonging to a given class (total number of white balls)
+  #n: Number of annotated metabolites NOT belonging to a given class (total number of non-white balls)
+  #k: Number of annotated metabolites that are differentially expressed (number of balls drawn)
+  enrichRes <- NULL
+  
+  for(i in 1:length(unique(tmpAnnot$class))){
+    tmpClass <- unique(tmpAnnot$class)[i]
+    tmptmpAnnot <- tmpAnnot[tmpAnnot$class %in% tmpClass ,] #extract all compounds in given annotation class
+    
+    K = length(SigCmpdVect)
+    X = length(SigCmpdVect[SigCmpdVect %in% tmptmpAnnot$cmpd])
+    N = length(AllCmpdVect) - X
+    M = nrow(tmptmpAnnot)
+    
+    if(is.null(minNoCmpds)){
+      enrichRes <- rbind(enrichRes, 
+                       data.frame(heirLevel = AnnotClass,
+                                  annGroup = tmpClass,
+                                  NoDE_k = K,
+                                  NoDEinClass_x = X,
+                                  NoInClass_m = M,
+                                  NoWithAnn = length(AllCmpdVect),
+                                  pVal = phyper(q = X, m = M, n = N, k = K, lower.tail = F)))
+    }else{
+      if(M < minNoCmpds){
+        enrichRes <- rbind(enrichRes, 
+                       data.frame(heirLevel = AnnotClass,
+                                  annGroup = tmpClass,
+                                  NoDE_k = K,
+                                  NoDEinClass_x = X,
+                                  NoInClass_m = M,
+                                  NoWithAnn = length(AllCmpdVect),
+                                  pVal = NA))
+      }else{
+        enrichRes <- rbind(enrichRes, 
+                       data.frame(heirLevel = AnnotClass,
+                                  annGroup = tmpClass,
+                                  NoDE_k = K,
+                                  NoDEinClass_x = X,
+                                  NoInClass_m = M,
+                                  NoWithAnn = length(AllCmpdVect),
+                                  pVal = phyper(q = X, m = M, n = N, k = K, lower.tail = F)))
+      }
+    }
+  }
+  enrichRes$AdjP <- p.adjust(enrichRes$pVal, method = "BH")
+  return(enrichRes)
+}
+#####
+
+#Load annotations
+Annot.GC <- read.csv("flashr/metaFiles/GCMS_2018_GC.03_annotation.csv")[c(1,3,4,9:14)]
+Annot.LC <- read.csv("flashr/metaFiles/LCMS_2018_LC.03_annotation.csv")[c(1,3,4,16:21)]
+Annot <- rbind(Annot.GC, Annot.LC)
+rm(Annot.LC, Annot.GC)
+
+#Load AOV res
+AOVres <- read.csv("SuppFiles/subpopAOV.csv")
+AOVresSig <- AOVres[AOVres$padj < 0.01 ,]
+
+
+enrichKingdom <- hypergeoTest(Annots = Annot, AllCmpdVect = AOVres$cmpd, SigCmpdVect = AOVresSig$cmpd, AnnotClass = "kingdom", minNoCmpds = 3)
+enrichSuperClass <- hypergeoTest(Annots = Annot, AllCmpdVect = AOVres$cmpd, SigCmpdVect = AOVresSig$cmpd, AnnotClass = "superclass", minNoCmpds = 3)
+enrichClass <- hypergeoTest(Annots = Annot, AllCmpdVect = AOVres$cmpd, SigCmpdVect = AOVresSig$cmpd, AnnotClass = "class", minNoCmpds = 3)
+enrichSubClass <- hypergeoTest(Annots = Annot, AllCmpdVect = AOVres$cmpd, SigCmpdVect = AOVresSig$cmpd, AnnotClass = "subclass", minNoCmpds = 3)
+enrichParent <- hypergeoTest(Annots = Annot, AllCmpdVect = AOVres$cmpd, SigCmpdVect = AOVresSig$cmpd, AnnotClass = "parent", minNoCmpds = 3)
+
+AllRes <- rbind(enrichKingdom, enrichSuperClass, enrichClass, enrichSubClass, enrichParent)
+xtable(na.omit(AllRes)[na.omit(AllRes)$AdjP <= 0.07 ,][c("heirLevel", "annGroup", "NoDEinClass_x", "NoInClass_m", "pVal", "AdjP")])
+
+write.csv(AllRes,
+          "flashr/manuscriptFigs/DE_EnrichmentTest.csv", row.names = F)
+```

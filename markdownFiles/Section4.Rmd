@@ -1,0 +1,368 @@
+---
+title: "Elucidating the genetic architecture of latent factors"
+author: "Malachy Campbell"
+date: "3/26/2020"
+output:
+  rmdformats::html_clean:
+    fig_width: 6
+    fig_height: 6
+    highlight: kate
+    thumbnails: true
+    lightbox: true
+    gallery: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      root.dir = "~/Documents/Dropbox/Work/Manuscripts/2020_OatLF/")
+```
+
+# Summary 
+This document provides all code to perform GWAS on factor scores, and estimate polygenicity using Bayes C$\pi$.
+
+## GWAS
+All analyses were run on the cluster as an array job, and used argparse to index the factors based on array number. 
+
+```{r, echo = T, eval = F}
+library(rrBLUP)
+library(argparse)
+
+rm(list = ls())
+
+parser <- ArgumentParser(description = "Does GWAS for many metabolites/traits")
+parser$add_argument("--arrayNo", dest="arrayNo", required=TRUE, help="Uses the array number to subset for fold")
+args <- parser$parse_args()
+
+JobNo <- as.numeric(args$arrayNo)
+
+InputData <- readRDS("../InputData.rds") #for mapping information
+mrks <- InputData$mrks - 1 
+mapData <- InputData$mapInfo
+facScr <- InputData$facScr
+GRM <- InputData$GRM
+
+rownames(mrks) <- paste0("GID_", row.names(facScr))
+geno <- cbind(mapData, t(mrks))
+colnames(GRM) <- row.names(GRM) <- paste0("GID_", row.names(facScr))
+
+pheno <- data.frame(gid = paste0("GID_", row.names(facScr)), Y = facScr[,JobNo]) 
+GWASres <- rrBLUP::GWAS(pheno = pheno, geno = geno, K = GRM, n.PC = 2, P3D = T, plot = F)
+
+saveRDS(GWASres, paste0("rrBLUP_GWAS_pl_sc", JobNo, ".rds"))
+```
+
+Compile results (ran on HCC)
+```{r, echo = T, eval = F}
+GWASres <- list()
+
+for(i in 1:100){
+  GWASres[[paste0("Fac_", i)]] <- readRDS(paste0("rrBLUP_GWAS_pl_sc", i, ".rds"))
+}
+
+saveRDS(GWASres, "rrBLUP_GWAS_pl_sc.rds")
+```
+
+
+### Determining p-value threshold using the method of Li and Ji
+Get number of tests.
+```{r, echo = T, eval = F}
+library(argparse)
+library(RSpectra)
+
+f.Ji <- function(M = NULL, k = NULL){
+  eigen.value <- abs(eigs_sym(M, k, opts = list(retvec = FALSE))$values)
+  rm(M)
+  Meffs <- sum(eigen.value>=1) + sum(eigen.value-floor(round(eigen.value,15)))
+  return(Meffs)
+}
+
+parser <- ArgumentParser(description = "Does GWAS for many metabolites/traits")
+parser$add_argument("--arrayNo", dest="arrayNo", required=TRUE, help="Uses the array number to subset for fold")
+args <- parser$parse_args()
+
+JobNo <- as.numeric(args$arrayNo)
+
+files <- list.files(pattern = ".rds")[JobNo]
+
+MrkData <- as.matrix(readRDS(files))
+M <- cor(MrkData); rm(MrkData)
+print("finished cor")
+
+tstMeff <- f.Ji(M = M, k = 5000)
+
+print(tstMeff)
+```
+
+
+
+### Results
+Function for Manhattan Plot that also will also plot unanchored markers.
+```{r, echo = T, eval = F}
+manhattanOat <- function(dataframe, colors=c("gray10", "gray50"), ymax="max", xaxis.cex=1, yaxis.cex = 1, suggestiveline=-log10(1e-5), genomewideline=-log10(5e-8), annotate=NULL, isLog = T, xlas = NULL, xsrt = NULL,  Title, ...) {
+  # Like regular oat, but more metropolitan
+  d=dataframe
+  
+  #throws error if you don't have columns named CHR, BP, and P in your data frame.
+  if (!("CHR" %in% names(d) & "BP" %in% names(d) & "P" %in% names(d))) stop("Make sure your data frame contains columns CHR, BP, and P")
+  
+  # limits chromosomes to plot. (23=x, 24=y, 25=par?, 26=mito?)
+  #if (any(limitchromosomes)) d=d[d$CHR %in% limitchromosomes, ]
+  
+  # remove na's, sort by CHR and BP, and keep snps where 0<P<=1
+  #d=subset(na.omit(d[order(d$CHR, d$BP), ]), (P>0 & P<=1))
+  
+  # -log10(p-value)
+  if(isLog == T){
+    d$logp = d$P
+  }else{
+    d$logp = -log10(d$P)
+  }
+  
+  # sets colors based on colors argument.
+  colors <- rep(colors, length(unique((d$CHR))))[1:length(unique((d$CHR)))]
+  
+  # sets the maximum value on the y axis (on the -log10p scale).
+  if (ymax=="max") ymax<-ceiling(max(d$logp))
+  #if (ymax<8) ymax<-8
+  
+  # creates continuous position markers for x axis for entire chromosome. also creates tick points.
+  d$pos=NA
+  ticks=NULL
+  lastbase=0
+  numchroms=length(unique(d$CHR))
+  if (numchroms==1) {
+    d$pos=d$BP
+    ticks=floor(length(d$pos))/2+1
+  } else {
+    for (i in 1:length(unique(d$CHR))) {
+      if (i==1) {
+        d[d$CHR %in% unique(d$CHR)[i], ]$pos=d[d$CHR %in% unique(d$CHR)[i] , ]$BP
+      } else {
+        lastbase=lastbase+tail(subset(d, CHR == unique(d$CHR)[i-1])$BP, 1)
+        d[d$CHR %in% unique(d$CHR)[i], ]$pos=d[d$CHR %in% unique(d$CHR)[i], ]$BP+lastbase
+      }
+      ticks=c(ticks, d[d$CHR %in% unique(d$CHR)[i], ]$pos[floor(length(d[d$CHR %in% unique(d$CHR)[i], ]$pos)/2)+1])
+    }
+  }
+  
+  # create the plot
+    with(d, plot(pos, logp, ylim = c(0,ymax), ylab=expression(-log[10](italic(p))), xlab = "Chromosome", xaxt = "n", type = "n", cex = 0.3, yaxt = "n", main = Title, ...))
+    # then make an axis that has chromosome number instead of position
+    axis(1, at = ticks, lab = unique(d$CHR), cex.axis = xaxis.cex, las = xlas, srt = xsrt)
+    axis(2, cex.axis = yaxis.cex)
+    icol=1
+    for (i in unique(d$CHR)) {
+    	with(d[d$CHR %in% i, ],points(pos, logp, col=colors[icol], cex=0.3, ...))
+    	icol = icol+1
+  }
+  
+  # create a new data frame with rows from the original data frame where SNP is in annotate character vector.
+  # then plot those points over the original graph, but with a larger point size and a different color.
+  if (!is.null(annotate)) {
+    d.annotate=d[which(d$SNP %in% annotate), ]
+    with(d.annotate, points(pos, logp, col="red", cex=0.5, ...))
+  }
+  
+  # add threshold lines
+  if (suggestiveline) abline(h=suggestiveline, col="blue")
+  if (genomewideline) abline(h=genomewideline, col="red")
+}
+```
+
+```{r, echo = T, eval = F}
+library(qqman)
+
+#rm(list = ls())
+
+#to add h2 to plot title
+factsbf <- readRDS("flashr/Greedy_pl/column_sc/factsbf_greedy_sc.rds")
+
+InputData <- readRDS("flashr/GWAS/allMrks/InputData.rds") #for mapping information
+mrks <- InputData$mrks
+mapData <- InputData$mapInfo
+facScr <- InputData$facScr
+
+GWASres <- readRDS("flashr/GWAS/allMrks/rrBLUP/rrBLUP_GWAS_pl_sc.rds")
+
+#pdf("GWAS/allMrks/rrBLUP/rrBLUP_FactMans.pdf", h = 4.2, w = 6)
+for (i in 1:100){
+pdf(paste0("Figs/Man/Man_",i,".pdf"), h = 4.2, w = 6)
+  tmpRes <- GWASres[[i]]
+  #mrkIndx <- which(mapData$marker %in% tmpRes$marker)
+  #tmpRes <- cbind(tmpRes, mapData)
+  #tmpRes <- tmpRes[order(tmpRes$chr, tmpRes$pos) ,]
+  #add index for position
+  #tmpRes$pos <- tmpRes$pos + 18 #add 18 to the position because some markers have a negative position???!!?!?!
+  tmpRes.chr <- tmpRes[!tmpRes$chr %in% "Unk" ,]; tmpRes.unk <- tmpRes[tmpRes$chr %in% "Unk" ,]
+  tmpRes.chr <- data.frame(CHR = tmpRes.chr$chr, BP = tmpRes.chr$pos, P = tmpRes.chr$Y)
+  tmpRes.chr$CHR <- droplevels(tmpRes.chr$CHR)
+  tmpRes.unk <- data.frame(CHR = tmpRes.unk$chr, BP = tmpRes.unk$pos, P = tmpRes.unk$Y)
+  
+  Ymax <- ceiling(max(tmpRes$Y)); print(Ymax)
+  
+  nf = layout(rbind(c(1,1,1), c(2,2,3)))
+  
+  #hist(facScr[,i], main = paste0("Fact ", i), xlab = "score")
+  
+  manhattanOat(dataframe = tmpRes.chr, suggestiveline = F, genomewideline = F, 
+               isLog = T, Title = paste0("Fact", i), 
+               xaxis.cex = 0.5, xlas = 2, xsrt = 45, ymax = Ymax)
+  
+  plot(tmpRes.unk$BP, tmpRes.unk$P, pch = 19, cex = 0.3, main = paste0("Fact ", i), ylab = "-log10(p)", xlab = "index", ylim = c(0, Ymax))
+  
+  qq(10^(-tmpRes$Y), xlim = c(0, Ymax), ylim = c(0, Ymax))
+  
+  dev.off()
+  }
+
+system("cd Figs/Man/")
+system("for file in *.pdf; do; sips -s format png $file --out $file.png; done"))
+system("rm *.pdf")
+```
+
+
+
+## Estimating polygenicity using Bayes C$\pi$
+Format data for JWAS
+```{r, echo = T, eval = F}
+InputData <- readRDS("GWAS/allMrks/InputData.rds")
+mrks <- InputData$mrks
+colnames(mrks) <- InputData$mapInfo$marker
+mrks <- data.frame(gid = row.names(InputData$facScr), mrks)
+write.csv(mrks, "polygen/jwas/mrks.csv", row.names = F)
+
+phenos <- InputData$facScr; colnames(phenos) <- paste0("Fact", 1:100)
+for (i in 1:100){
+  #make directory for each factor
+  foldName <- paste0("polygen/jwas/fact", i)
+  ifelse(!dir.exists(foldName), dir.create(foldName), FALSE) #create directory if folder doesn't exist
+  tmpphenos <- data.frame(gid = row.names(InputData$facScr), Y = phenos[,i])
+  write.csv(tmpphenos, paste0(foldName, "/phenos.csv"), row.names = F)
+}
+```
+
+Copy JWAS_fact.jl into each fact.
+```{bash, echo = T, eval = F}
+for i in $(seq 1 100); do cp JWAS_facts.jl fact$i/JWAS_facts.jl; done
+for i in $(seq 1 100); do cp JWAS_facts.slurm fact$i/JWAS_facts.slurm; done
+
+for i in $(seq 1 100); do rm fact$i/slurm-*; done
+
+#for i in $(seq 1 100); do cp JWAS_facts.jl fact$i/JWAS_facts.jl; done
+
+for i in $(seq 1 100); do cp polygen/jwas/JWAS_facts.slurm polygen/jwas/fact$i/JWAS_facts.slurm; done
+```
+
+This code was run the cluster.
+```{julia, echo = T, eval = F}
+using DataFrames
+using CSV
+using JWAS
+
+phenotypes = CSV.read("phenos.csv",delim = ',',header=true)
+first(phenotypes, 5)
+
+mod2 = "Y = intercept + gid"
+R2 = 1
+model2 = build_model(mod2, R2)
+G2 = 1
+set_random(model2,"gid",G2)
+
+add_genotypes(model2,"../mrks.csv",G2,separator=',',header=true)
+
+out3 = runMCMC(model2,phenotypes, burnin=100000,chain_length=200000,output_samples_frequency=125, estimatePi = true, Pi = 0.4, estimate_variance = true, methods = "BayesC", update_priors_frequency = 0, estimateScale = true)
+
+modFreq = GWAS("MCMC_samples_marker_effects_Y.txt";header=true)
+
+res = convert(DataFrame, modFreq)
+
+CSV.write("ModFreq.csv",res)
+```
+
+Compile pi, $h^2$ and model frequency
+```{bash, echo = T, eval = F}
+for i in $(seq 1 100); do mkdir Pis/pi_fact$i; cp fact$i/MCMC_samples_pi.txt Pis/pi_fact$i/; cp fact$i/MCMC_samples_heritability.txt Pis/pi_fact$i/; cp fact$i/ModFreq.csv Pis/pi_fact$i/; cp fact$i/MCMC_samples_residual_variance.txt Pis/pi_fact$i/; cp fact$i/MCMC_samples_genetic_variance.txt Pis/pi_fact$i/; done
+
+for i in $(seq 1 100); do cp fact$i/MCMC_samples_pi.txt Pis/pi_fact$i/; cp fact$i/MCMC_samples_heritability.txt Pis/pi_fact$i/; cp fact$i/ModFreq.csv Pis/pi_fact$i/; cp fact$i/MCMC_samples_residual_variance.txt Pis/pi_fact$i/; cp fact$i/MCMC_samples_genetic_variance.txt Pis/pi_fact$i/; done
+
+for i in $(seq 1 100); do cp fact$i/MCMC_samples_pi.txt Pis/pi_fact$i/; done
+
+for i in $(seq 1 100); do cp fact$i/MCMC_samples_residual_variance.txt Pis/pi_fact$i/; done
+
+for i in $(seq 1 100); do cp fact$i/MCMC_samples_genetic_variance.txt Pis/pi_fact$i/; done
+
+mkdir Pis
+mv pi_fact* Pis
+
+tar -czvf Pis.tar.gz Pis/
+
+scp malachyc@crane.unl.edu:/work/walia/malachyc/O_met/polygen/jwas/Pis.tar.gz /Users/malachycampbell/Documents/Dropbox/Work/Oats/DivPanel_Met_HH/statTargetQC/flashr/polygen/jwas
+```
+
+Point estimates for $1 - \pi$, $h^2$, and sparsity.
+```{r, echo = T, eval = F}
+medPi <- NULL
+meanPi <- NULL
+med.h2 <- NULL
+mean.h2 <- NULL
+for(i in 1:100){
+  medPi <- c(medPi, median(1 - read.table(paste0("polygen/jwas/Pis/pi_fact",i,"/MCMC_samples_pi.txt"),
+                                          header = F, sep = " ")$V1[200:250]))
+  meanPi <- c(meanPi, mean(1 - read.table(paste0("polygen/jwas/Pis/pi_fact",i,"/MCMC_samples_pi.txt"),
+                                          header = F, sep = " ")$V1[200:250]))
+  med.h2 <- c(med.h2, median(read.table(paste0("polygen/jwas/Pis/pi_fact",i,"/MCMC_samples_heritability.txt"),
+                                        header = T, sep = " ")$Y[200:250]))
+  mean.h2 <- c(mean.h2, mean(read.table(paste0("polygen/jwas/Pis/pi_fact",i,"/MCMC_samples_heritability.txt"),
+                                        header = T, sep = " ")$Y[200:250]))
+}
+
+
+allRes <- data.frame(med_1.pi = medPi, mn_1.pi = meanPi, med_h2 = med.h2, mn_h2 = mean.h2)
+factsbf <- readRDS("Greedy_pl/column_sc/factsbf_greedy_sc.rds")
+getsparsmixprop.Lds <- function(flashObj = NULL){
+  k = flashObj$nfactors
+  sp = NULL
+  for(i in 1:k){
+    sp <- rbind(sp, flashObj$fit$gf[[i]]$pi)
+  }
+  return(sp)
+}
+
+sparseMixprop <- getsparsmixprop.Lds(flashObj = factsbf); colnames(sparseMixprop) <- c("sparse", "dense")
+allRes <- cbind(allRes, sparseMixprop)
+
+#add ranks for med_1.pi and sparse
+allRes$fact = 1:100
+#allRes <- allRes[allRes$fact %in% goodFacts$Factor ,] #get only the good factors
+
+allRes <- allRes[order(allRes$med_1.pi, decreasing = T) ,]
+allRes$PolyRank <- 1:nrow(allRes)
+allRes <- allRes[order(allRes$sparse, decreasing = T) ,]
+allRes$SparseRank <- 1:nrow(allRes)
+
+write.csv(allRes, "polygen/PiSparseRanks.csv", row.names = F)
+
+##Calculate the partial covariance and convert to correlation (correlation between X and Y while accounting for Z)
+partialCor <- function(X = NULL, Y = NULL, Z = NULL, Method = NULL){
+  X <- data.frame(X = X); Y <- data.frame(Y = Y); Z <- data.frame(Z = Z)
+  XY <- cor(X, Y, method = Method)
+  XZ <- cor(X, Z, method = Method)
+  YZ <- cor(Y, Z, method = Method)
+  top <- XY - XZ*YZ
+  bottom <- sqrt((1-XY^2)*(1-YZ^2))
+  partRho <- top/bottom
+  return(partRho)
+}
+  
+partialCor(X = allRes$med_1.pi, Y = allRes$sparse, Z = allRes$med_h2, Method = "spearman") #-0.3760028
+partialCor(X = allRes$mn_1.pi, Y = allRes$sparse, Z = allRes$mn_h2, Method = "spearman") #-0.5255361
+#get p-values?
+
+ppcor::pcor.test(x = allRes$med_1.pi, y = allRes$sparse, z = allRes$med_h2, method = "spearman")
+#   estimate     p.value statistic  n gp   Method
+# 1 -0.38673 0.002710834 -3.138196 59  1 spearman
+
+ppcor::pcor.test(x = allRes$mn_1.pi, y = allRes$sparse, z = allRes$mn_h2, method = "spearman")
+#     estimate      p.value statistic  n gp   Method
+# 1 -0.4681243 0.0002108794  -3.96432 59  1 spearman
+```
