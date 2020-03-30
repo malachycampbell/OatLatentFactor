@@ -15,7 +15,7 @@ This repo contains all the code used for the manuscript. The code is organized a
   - [.Rmd File](https://htmlpreview.github.io/?)
   
 * **2. Imputation of Genotypes**
-  - [html output](https://htmlpreview.github.io/?https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section2.html)
+  - [html output](https://htmlpreview.github.io/?https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section1.html)
   - [.Rmd File](https://htmlpreview.github.io/?)
   
 * **3. Large-scale metabolomics provides insight into natural variation in the chemical composition of oat seed**
