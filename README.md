@@ -20,23 +20,23 @@ This repo contains all the code used for the manuscript. The code is organized a
   
 * **3. Large-scale metabolomics provides insight into natural variation in the chemical composition of oat seed**
   - [html output](https://htmlpreview.github.io/?https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section1.html)
-  - [.Rmd File](https://htmlpreview.github.io/?)
+  - [.Rmd File](https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section1.Rmd)
   
 * **4. Latent factor model selection**
   - [html output](https://htmlpreview.github.io/?https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section2.html)
-  - [.Rmd File](https://htmlpreview.github.io/?)
+  - [.Rmd File](https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section2.Rmd)
  
 * **5. Factor analysis reveals common biological features of the oat seed metabolome**
   - [html output](https://htmlpreview.github.io/?https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section3.html)
-  - [.Rmd File]()
+  - [.Rmd File](https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section3.Rmd)
   
 * **6. Elucidating the genetic architecture of latent factors**
   - [html output](https://htmlpreview.github.io/?https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section4.html)
-  - [.Rmd File]()
+  - [.Rmd File](https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section4.Rmd)
   
 * **7. Biologically-informed prediction of seed quality traits**
   - [html output](https://htmlpreview.github.io/?https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section5.html)
-  - [.Rmd File]()
+  - [.Rmd File](https://github.com/malachycampbell/OatLatentFactor/blob/master/markdownFiles/Section5.Rmd)
   
  ## Funding
 **
